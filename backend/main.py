@@ -383,6 +383,15 @@ class Backend:
                                       on_progress=self._forward_install,
                                       on_done=lambda ok, m: self._on_install_done(pkg, ok, m))
                 await ws.send(proto.make_response(rid, ok=True, installing=True))
+        elif mtype == "semantics_trigger":
+            # Manual semantic inference trigger (button in gridmap section).
+            inst = self.registry.get("Semantics")
+            if inst is None:
+                self.registry.enable("Semantics")
+                inst = self.registry.get("Semantics")
+            if inst is not None:
+                inst.force_predict()
+            await ws.send(proto.make_response(rid, ok=inst is not None))
         else:
             await ws.send(proto.make_error(rid, f"unknown type {mtype!r}"))
 

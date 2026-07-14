@@ -117,6 +117,29 @@ ws.onRegistrationStatus = (s) => { regPanel.setStatus(s); };
 ws.onRegistrationProgress = (p) => { regPanel.setProgress(p); };
 ws.onInstallProgress = (p) => { panel.setInstallProgress(p); };
 ws.onPluginStatus = (s) => { panel.setPluginStatus(s); };
+
+// --- semantics controls (gridmap section) ---
+const semBtn = document.getElementById('sem-trigger-btn');
+const semAuto = document.getElementById('sem-auto');
+const semInterval = document.getElementById('sem-interval');
+semBtn.addEventListener('click', () => {
+  semBtn.disabled = true;
+  ws.request({ type: 'semantics_trigger' }).then(r => {
+    setTimeout(() => { semBtn.disabled = false; }, 500);
+  });
+});
+semAuto.addEventListener('change', () => {
+  // Enable/disable Semantics plugin + set predict_interval.
+  if (semAuto.checked) {
+    ws.request({ type: 'enable_plugin', name: 'Semantics' });
+  } else {
+    ws.request({ type: 'disable_plugin', name: 'Semantics' });
+  }
+});
+semInterval.addEventListener('change', () => {
+  const v = parseFloat(semInterval.value) || 5;
+  ws.send({ type: 'set_property', name: 'Semantics', key: 'predict_interval', value: v });
+});
 ws.onProcessStats = (s) => {
   document.getElementById('st-mem').textContent = s.mem_mb;
   document.getElementById('st-cpu').textContent = s.cpu_pct;

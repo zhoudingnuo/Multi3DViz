@@ -78,6 +78,12 @@ class SemanticsService(ServicePlugin):
         except Exception as e:
             log.warning("SemPredictor init failed: %s — rooms mode only", e)
             self._predictor = None
+        self._force = False  # manual trigger flag (set by WS semantics_trigger)
+
+    def force_predict(self):
+        """Manual trigger: next update() tick will run inference immediately
+        regardless of the interval throttle."""
+        self._force = True
 
     # --- main tick ---
     def update(self, dt: float):
@@ -85,17 +91,19 @@ class SemanticsService(ServicePlugin):
         if ex is None or getattr(ex, "_gmap", None) is None:
             return None
         gmap = ex._gmap
-        # Only re-run if the grid changed shape (rebuild) or interval elapsed.
         self._t += dt
         shape_changed = gmap.grid.shape != self._last_grid_shape
         if shape_changed:
-            # grid rebuilt — invalidate caches so we re-predict on the new shape
             self._sem = None
             self._rooms = None
             self._last_grid_shape = gmap.grid.shape
-        if self._t < float(self.get("predict_interval", PREDICT_INTERVAL)) and not shape_changed:
+        # Run if: interval elapsed, grid shape changed, or manual force.
+        should_run = (self._t >= float(self.get("predict_interval", PREDICT_INTERVAL))
+                      or shape_changed or self._force)
+        if not should_run:
             return None
         self._t = 0.0
+        self._force = False
 
         mode = self.get("mode", "semantic")
         if mode == "semantic":

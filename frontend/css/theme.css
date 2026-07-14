@@ -191,6 +191,26 @@ html, body {
 #gridmap-section {
   display: flex; flex-direction: column; gap: 4px;
 }
+#gridmap-controls {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 2px 0;
+}
+#gridmap-controls .sem-trigger {
+  padding: 4px 8px; font-size: 11px;
+  border-color: var(--accent-dim);
+}
+#gridmap-controls .sem-trigger:hover:not(:disabled) {
+  background: rgba(78,201,176,0.12); color: var(--accent); border-color: var(--accent);
+}
+#gridmap-controls .sem-trigger:disabled { opacity: 0.4; }
+#gridmap-controls input[type="number"] {
+  background: var(--bg-elev-2); border: 1px solid var(--border-soft);
+  color: var(--text-value); border-radius: var(--radius-sm);
+  padding: 2px 4px; font-family: var(--font-mono); font-size: 11px;
+  outline: none; width: 38px;
+}
+#gridmap-controls input[type="number"]:focus { border-color: var(--accent); }
+#gridmap-controls .mode-toggle { font-size: 11px; }
 #gridmap-wrap {
   position: relative;
   background: var(--bg-inset);

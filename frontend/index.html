@@ -33,6 +33,14 @@
       <!-- 2D top-down gridmap (resident component under ICP card) -->
       <div id="gridmap-section">
         <div class="section-title">Gridmap</div>
+        <div id="gridmap-controls">
+          <button class="ssh-btn sem-trigger" id="sem-trigger-btn" title="运行一次语义推理">🧠 语义推理</button>
+          <label class="mode-toggle" title="勾选后按间隔自动运行语义推理">
+            <input type="checkbox" id="sem-auto"/>
+            <span>自动</span>
+          </label>
+          <input type="number" id="sem-interval" value="5" min="1" max="60" step="1" title="自动推理间隔(秒)" style="width:38px"/>s
+        </div>
         <div id="gridmap-wrap">
           <canvas id="grid-canvas"></canvas>
           <div class="pick" id="grid-pick"></div>
