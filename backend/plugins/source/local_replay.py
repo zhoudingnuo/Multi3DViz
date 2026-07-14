@@ -126,6 +126,7 @@ class LocalReplaySource(DataSourcePlugin):
         self._cached_pub_pts = None
         self._cached_pub_cols = None
         self._cached_voxel = -1.0
+        self._stream_dedup_t = 0.0  # throttle: re-downsample every 0.5s in stream mode
 
     # --- lifecycle ---
     def on_enable(self):
@@ -349,6 +350,9 @@ class LocalReplaySource(DataSourcePlugin):
                 self._vis_cum = [0]
                 self._odom = []
                 self._n = 0
+                self._stream_dedup_t = 0.0
+                self._cached_pub_frame = -1
+                self._cached_pub_pts = None
                 # Gravity correction loaded once per run.
                 try:
                     _, self._stream_R = data_utils.load_gravity(
@@ -381,12 +385,29 @@ class LocalReplaySource(DataSourcePlugin):
             self._vis_pts.append(gf)  # raw gravity-corrected (global dedup at _publish)
             self._vis_cum.append(self._vis_cum[-1] + len(gf))
         self._odom.extend(new_odom)
-        # Colors recomputed at _publish time after global dedup (same as batch).
         self._n = len(self._frames)
-        # Publish the full accumulated cloud (cursor == latest in stream mode).
         rid = self.get("robot_id", "robot_a")
         self._cursor = float(self._n)
-        self._publish(rid, self._n)
+        # STREAM PERFORMANCE: throttle the expensive global re-downsample to
+        # every ~0.5s instead of every tick. The cloud keeps accumulating raw
+        # in _vis_pts, but _publish only re-downsamples when the throttle
+        # window elapses. Between re-downsamples, it publishes the last
+        # cached result — the cloud visibly grows in bursts every 0.5s rather
+        # than stalling the tick loop on every 10Hz frame arrival.
+        self._stream_dedup_t += dt
+        if self._stream_dedup_t >= 0.5:
+            self._stream_dedup_t = 0.0
+            self._publish(rid, self._n)
+        elif self._cached_pub_pts is not None:
+            # Between re-downsamples: publish the cached cloud with updated odom.
+            self.ctx.data.publish(rid, {
+                "robot_id": rid,
+                "frame_idx": self._n,
+                "max_frame": self._n,
+                "positions": self._cached_pub_pts,
+                "colors": self._cached_pub_cols,
+                "odom": self._odom[-1] if self._odom else None,
+            })
         self._last_pushed = self._n
         return None
 
