@@ -1,0 +1,58 @@
+# Agibot D1 Edu-Ultra 受控端默认配置 (Robot B)
+# Deploy to: orin-001@<agibot-host> (default 192.168.234.1, WiFi AP)
+# SDK: mc_sdk_zsl_1_py (vendor .so), UDP 43988
+# ROS: FAST-LIO native ROS2 (mapping.launch.py) OR ROS1 noetic container
+#
+# Control side (Multi3DViz on Windows) reads this robot as <data_root>/agibot/...
+# and writes its target to /home/orin-001/ccenter_target_b.txt via SSH (key auth).
+
+mode: both          # record + execute (full closed loop)
+log_level: INFO
+
+recorder:
+  enabled: true
+  ros: ros2                 # ros2 (native) | ros1 (noetic container)
+  cloud_topic: /cloud_registered
+  odom_topic: /Odometry
+  imu_topic: /livox/imu
+  data_root: /home/orin-001/m3v_data
+  robot: agibot             # subdir under data_root; control side expects <robot>/data/...
+  naming: index             # 000000.npy (matches the agibot historical data convention)
+  gravity_enabled: true
+  gravity_samples: 500
+
+transport:
+  enabled: true
+  # Windows control-side OpenSSH endpoint.
+  host: 192.168.1.10        # ← CHANGE to your Windows machine IP
+  port: 22
+  user: Z790                # ← CHANGE to your Windows SSH user
+  password: null            # null → SSH key auth (recommended). Set a string for password auth.
+  remote_root: C:/Users/Z790/ccenter   # Multi3DViz LocalReplaySource.data_root on Windows
+  interval: 1.0
+  atomic_remote: true
+
+executor:
+  enabled: true
+  target_path: /home/orin-001/ccenter_target_b.txt    # control side SSH-writes here
+  poll_interval: 0.5
+  stale_timeout: 10.0
+  arrive_threshold: 0.3     # matches explorer.py:118 reached()
+  max_fwd: 0.5
+  max_turn: 1.0
+  turn_kp: 1.2
+  target_deadband: 0.1
+
+driver:
+  kind: agibot
+  # mc_sdk_zsl_1_py connection (UDP). The robot's sdk_config.yaml target_ip
+  # must already point at agibot_local_ip — see docs/DEPLOYMENT.md.
+  agibot_local_ip: 192.168.234.18     # this control computer's IP on the robot's WiFi
+  agibot_local_port: 43988
+  agibot_robot_ip: 192.168.234.1
+  agibot_sdk_lib_path: /home/orin-001/ZCodeProject/lib/zsl-1/aarch64
+
+web:
+  enabled: true
+  host: 0.0.0.0          # LAN-reachable; open http://<robot-ip>:8765/ from the control PC
+  port: 8765

@@ -1,0 +1,365 @@
+/* theme.css — ZCode-inspired dark design tokens for Multi3DViz.
+   NEUTRAL zinc/gray base (NOT slate-blue), single green accent.
+   The earlier palette used Tailwind "slate" which reads blue; this uses
+   neutral grays so panels/list/sidebar match ZCode's gray-black feel. */
+
+:root {
+  /* Base — neutral zinc grays, no blue tint */
+  --bg:            #1e1e1e;   /* app background (VSCode dark base) */
+  --bg-elev-1:     #252526;   /* panel / sidebar */
+  --bg-elev-2:     #2d2d2d;   /* hover / input */
+  --bg-inset:      #181818;   /* viewport / canvas bg */
+  --border:        #3c3c3c;   /* separators */
+  --border-soft:   #333333;
+
+  /* Text — neutral whites/grays, no blue cast */
+  --text:          #cccccc;   /* primary text */
+  --text-value:    #d4d4d4;   /* data values */
+  --text-muted:    #858585;   /* labels / secondary */
+
+  /* Accent + status (single brand accent = green) */
+  --accent:        #4ec9b0;   /* VSCode teal-green accent */
+  --accent-dim:    #3da89a;
+  --status-ok:     #4ec9b0;
+  --status-warn:   #dcdcaa;
+  --status-err:    #f48771;
+  --status-run:    #569cd6;
+
+  /* Sizing */
+  --radius:        6px;
+  --radius-sm:     4px;
+  --gap:           8px;
+  --gap-lg:        14px;
+  --font:          'Segoe UI', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono:     'Cascadia Code', 'Consolas', 'Menlo', monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0;
+  height: 100%; width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* === App shell layout: Displays | 3D viewport | 2D grid | Robot/SSH control === */
+#app {
+  display: grid;
+  grid-template-columns: 280px 1fr 380px 280px;
+  grid-template-rows: 36px 1fr 22px;
+  grid-template-areas:
+    "topbar      topbar   topbar      topbar"
+    "sidebar     viewport gridpanel   controlpanel"
+    "statusbar   statusbar statusbar  statusbar";
+  height: 100vh;
+}
+/* Collapse the 2D grid panel when there's no grid yet so the 3D viewport gets
+   more width. Toggled by adding .no-grid on #app. */
+#app.no-grid {
+  grid-template-columns: 280px 1fr 0 280px;
+}
+#app.no-grid #gridpanel { display: none; }
+
+#topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-lg);
+  padding: 0 14px;
+  background: var(--bg-elev-1);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+#topbar .logo { display: flex; align-items: center; gap: 8px; }
+#topbar .logo .dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 8px var(--accent);
+}
+#topbar .conn {
+  margin-left: auto;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-muted);
+  display: flex; align-items: center; gap: 6px;
+}
+#topbar .conn .ind {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--status-err);
+}
+#topbar .conn.ok .ind { background: var(--status-ok); }
+#topbar .conn.conn .ind { background: var(--status-warn); }
+
+/* === Sidebar: plugin catalog + properties === */
+#sidebar {
+  grid-area: sidebar;
+  background: var(--bg-elev-1);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 10px;
+  display: flex; flex-direction: column; gap: var(--gap-lg);
+}
+
+.section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin: 4px 2px 6px;
+  display: flex; align-items: center; gap: 6px;
+}
+.section-title::before {
+  content: ''; width: 7px; height: 7px; border-radius: 2px;
+  background: var(--accent);
+}
+
+/* Plugin row: checkbox + name + category tag */
+.plugin-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.plugin-row:hover { background: var(--bg-elev-2); }
+.plugin-row .name { flex: 1; font-weight: 500; }
+.plugin-row .cat {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted);
+  background: var(--bg-elev-2);
+  padding: 1px 6px; border-radius: 10px;
+}
+.plugin-row.on .name { color: var(--accent); }
+.plugin-row input { accent-color: var(--accent); cursor: pointer; }
+
+/* Property panel for the selected/expanded plugin */
+.props {
+  margin: 2px 0 6px 22px;
+  padding: 8px 10px;
+  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  border-left: 2px solid var(--accent-dim);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.props label {
+  display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px; color: var(--text-muted);
+}
+.props input, .props select {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border-soft);
+  color: var(--text-value);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  font-family: var(--font-mono); font-size: 12px;
+  outline: none;
+}
+.props input:focus, .props select:focus { border-color: var(--accent); }
+.props input[type=range] { padding: 0; }
+
+/* === Viewport === */
+#viewport {
+  grid-area: viewport;
+  position: relative;
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+#viewport canvas { display: block; }
+#viewport .hint {
+  position: absolute; top: 10px; left: 12px;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-muted);
+  background: rgba(30,30,30,0.85);
+  padding: 4px 8px; border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+#viewport .empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); font-size: 14px;
+  pointer-events: none;
+}
+
+/* === Right control panel (robots + SSH + registration) === */
+#controlpanel {
+  grid-area: controlpanel;
+  background: var(--bg-elev-1);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 10px;
+  display: flex; flex-direction: column; gap: var(--gap-lg);
+}
+
+/* === 2D grid panel (right) === */
+#gridpanel {
+  grid-area: gridpanel;
+  background: var(--bg-elev-1);
+  border-left: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+}
+#gridpanel canvas { display: block; width: 100%; height: 100%; }
+#gridpanel .pick {
+  position: absolute; bottom: 8px; left: 12px;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-value);
+  background: rgba(30,30,30,0.9);
+  padding: 3px 7px; border-radius: var(--radius-sm);
+  pointer-events: none;
+}
+
+/* === Status bar === */
+#statusbar {
+  grid-area: statusbar;
+  background: var(--bg-elev-1);
+  border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 18px;
+  padding: 0 14px;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* === Plugin type header (multi-instance: name + add button) === */
+.plugin-type-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px;
+}
+.plugin-type-row .ptype-name { flex: 1; font-weight: 500; font-size: 12px; }
+.plugin-type-row .add-inst { color: var(--accent); }
+
+/* === Instance row (one per live multi-instance plugin) === */
+.instance-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px 5px 22px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.instance-row:hover { background: var(--bg-elev-2); }
+.instance-row .inst-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); flex-shrink: 0;
+}
+.instance-row .inst-label { flex: 1; font-size: 12px; font-family: var(--font-mono); color: var(--text-value); }
+.instance-row .inst-robot {
+  margin-left: 6px; padding: 0 5px; border-radius: 8px;
+  background: var(--bg-elev-2); color: var(--accent);
+  font-size: 10px;
+}
+.prop-group {
+  font-size: 10px; color: var(--text-muted); margin-top: 4px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.prop-val { font-family: var(--font-mono); color: var(--text-value); font-size: 11px; }
+
+/* === Robot fleet panel (sidebar section) === */
+/* === Robot fleet panel (now in right control panel) === */
+.robot-card {
+  background: var(--bg-inset); border-radius: var(--radius-sm);
+  border-left: 3px solid var(--status-err);
+  padding: 8px 10px; margin: 4px 0;
+}
+.robot-card.st-online { border-left-color: var(--status-ok); }
+.robot-card.st-warn { border-left-color: var(--status-warn); }
+.robot-head { display: flex; align-items: center; gap: 8px; }
+.robot-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-err); flex-shrink: 0; }
+.robot-card.st-online .robot-dot { background: var(--status-ok); box-shadow: 0 0 6px var(--status-ok); }
+.robot-card.st-warn .robot-dot { background: var(--status-warn); }
+.robot-info { flex: 1; min-width: 0; }
+.robot-name { font-weight: 600; font-size: 12px; }
+.robot-id { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); font-weight: 400; }
+.robot-host { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.robot-err { color: var(--status-err); }
+/* SSH / FAST-LIO controls */
+.robot-ssh { margin-top: 8px; display: flex; gap: 6px; }
+.ssh-btn {
+  flex: 1; padding: 6px 8px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft); background: var(--bg-elev-2);
+  color: var(--text); font-size: 11px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+  transition: background .12s, border-color .12s;
+}
+.ssh-btn:hover:not(:disabled) { border-color: var(--accent); }
+.ssh-btn.launch:hover:not(:disabled) { background: rgba(78,201,176,0.15); color: var(--accent); border-color: var(--accent); }
+.ssh-btn.stop:hover:not(:disabled) { background: rgba(244,135,113,0.15); color: var(--status-err); border-color: var(--status-err); }
+.ssh-btn:disabled { opacity: 0.4; cursor: default; }
+.ssh-btn .ico { display: block; }
+.offline-note { color: var(--text-muted); font-size: 10px; font-style: italic; padding: 4px 0; }
+
+.robot-empty { color: var(--text-muted); font-size: 11px; padding: 6px 2px; font-style: italic; }
+
+/* Modern icon button — flat, ghost style, used across panels. */
+.btn-icon {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  width: 26px; height: 26px;
+  cursor: pointer; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.btn-icon:hover:not(:disabled) {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border-color: var(--border-soft);
+}
+.btn-icon:active:not(:disabled) { background: var(--border-soft); }
+.btn-icon:disabled { opacity: 0.3; cursor: default; }
+.btn-icon.danger:hover:not(:disabled) { color: var(--status-err); border-color: var(--status-err); }
+.btn-icon .ico { display: block; }
+
+/* Add-robot form */
+.add-form summary {
+  font-size: 11px; color: var(--text-muted); cursor: pointer; padding: 6px 2px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+.form-grid { display: flex; flex-direction: column; gap: 6px; padding: 8px; margin-top: 4px;
+  background: var(--bg-inset); border-radius: var(--radius-sm); }
+.form-grid label { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--text-muted); }
+.form-grid label small { font-size: 9px; opacity: 0.7; }
+.form-grid input {
+  background: var(--bg-elev-2); border: 1px solid var(--border-soft);
+  color: var(--text-value); border-radius: var(--radius-sm);
+  padding: 4px 6px; font-family: var(--font-mono); font-size: 11px; outline: none;
+}
+.form-grid input:focus { border-color: var(--accent); }
+.add-btn {
+  background: var(--accent) !important; color: var(--bg) !important;
+  border: none; border-radius: var(--radius-sm); padding: 6px; font-weight: 600;
+  cursor: pointer; margin-top: 2px;
+}
+.toast { font-size: 11px; padding: 4px 6px; border-radius: 3px; margin-bottom: 4px; }
+.toast.ok { background: rgba(34,197,94,0.15); color: var(--status-ok); }
+.toast.err { background: rgba(208,80,80,0.15); color: var(--status-err); }
+
+/* === Registration panel === */
+.reg-card {
+  background: var(--bg-inset); border-radius: var(--radius-sm);
+  border-left: 3px solid var(--text-muted); padding: 8px 10px; margin: 4px 0;
+}
+.reg-card.st-warn { border-left-color: var(--status-warn); }
+.reg-card.st-ok { border-left-color: var(--status-ok); }
+.reg-card.st-err { border-left-color: var(--status-err); }
+.reg-row { display: flex; align-items: center; justify-content: space-between; }
+.reg-state { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.reg-state.st-idle { color: var(--text-muted); }
+.reg-state.st-warn { color: var(--status-warn); }
+.reg-state.st-ok { color: var(--status-ok); }
+.reg-state.st-err { color: var(--status-err); }
+.reg-actions { display: flex; gap: 4px; }
+.reg-metrics { display: flex; gap: 14px; margin: 6px 0 4px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.reg-metrics b { color: var(--text-value); font-weight: 500; }
+.reg-detail { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
+  line-height: 1.4; word-break: break-word; }
+#statusbar .item { display: flex; gap: 5px; }
+#statusbar .item b { color: var(--text-value); font-weight: 500; }
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }

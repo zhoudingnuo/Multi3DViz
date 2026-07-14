@@ -1,0 +1,62 @@
+# Unitree Go2 受控端默认配置 (Robot A)
+# Deploy to: unitree@<go2-host> (default 10.60.77.187, password 123)
+# SDK: unitree_sdk2py (CycloneDDS), SportClient high-level API
+# ROS: FAST-LIO ROS2 (cloud_registered + Odometry), LiDAR = Livox MID360
+#
+# Control side (Multi3DViz on Windows) reads this robot as <data_root>/unitree/...
+# and writes its target to /home/unitree/sda2/online/ccenter_target_a.txt via SSH.
+
+mode: both          # record + execute (full closed loop)
+log_level: INFO
+
+recorder:
+  enabled: true
+  # Unitree Go2 ships ROS1 Noetic (livox_ros_driver2 + FAST-LIO). Use ros1 so
+  # the recorder imports rospy and subscribes to the FAST-LIO topics.
+  ros: ros1
+  cloud_topic: /cloud_registered
+  odom_topic: /Odometry
+  imu_topic: /livox/imu
+  data_root: /home/unitree/m3v_data
+  robot: unitree            # subdir under data_root; control side expects <robot>/data/...
+  naming: indexed           # 000000_HHMMSS_mmm.npy (Unitree historical convention)
+  gravity_enabled: true
+  gravity_samples: 500
+
+transport:
+  enabled: true
+  # Windows control-side OpenSSH endpoint (must match the host running the
+  # control-side Multi3DViz). The Unitree robot was probed at 10.60.77.187 and
+  # the Windows control machine at 10.60.77.49 — set host/user accordingly.
+  host: 10.60.77.49         # ← your Windows machine IP
+  port: 22
+  user: Z790                # ← your Windows SSH user
+  password: null            # null → SSH key auth (recommended)
+  remote_root: C:/Users/Z790/ccenter   # Multi3DViz LocalReplaySource.data_root on Windows
+  interval: 1.0
+  atomic_remote: true
+
+executor:
+  enabled: true
+  target_path: /home/unitree/sda2/online/ccenter_target_a.txt   # control side SSH-writes here
+  poll_interval: 0.5
+  stale_timeout: 10.0
+  arrive_threshold: 0.3     # matches explorer.py:118 reached()
+  max_fwd: 0.5
+  max_turn: 1.0
+  turn_kp: 1.2
+  target_deadband: 0.1
+
+driver:
+  kind: unitree
+  # CycloneDDS network interface — must be the NIC that reaches the Go2.
+  # On the Go2 itself this is usually eth0 or lo (the SDK talks to the
+  # internal motion controller over loopback). Set to the dog's WiFi/eth
+  # NIC if running from an external machine.
+  unitree_network_iface: eth0
+  unitree_protocol: ""      # "" = SDK default (UDP)
+
+web:
+  enabled: true
+  host: 0.0.0.0          # LAN-reachable; open http://<robot-ip>:8765/ from the control PC
+  port: 8765

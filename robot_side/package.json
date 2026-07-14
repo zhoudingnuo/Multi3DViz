@@ -1,0 +1,59 @@
+{
+  "name": "m3v-agent-shell",
+  "version": "0.1.0",
+  "description": "Multi3DViz 受控端 desktop shell (Electron) — wraps m3v_agent",
+  "main": "electron/main.js",
+  "author": "Multi3DViz",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "agent": "python3 -m m3v_agent.agent -c templates/unitree/config.yaml",
+    "agent:stdio": "python3 -m m3v_agent.agent --ui-stdio -c templates/unitree/config.yaml",
+    "dist": "electron-builder --linux deb",
+    "dist:arm64": "electron-builder --linux deb --arm64"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.multi3dviz.agent",
+    "productName": "m3v-agent",
+    "files": [
+      "electron/**",
+      "shell/**"
+    ],
+    "extraResources": [
+      {
+        "from": "m3v_agent",
+        "to": "m3v_agent"
+      },
+      {
+        "from": "templates",
+        "to": "templates"
+      },
+      {
+        "from": "requirements.txt",
+        "to": "requirements.txt"
+      }
+    ],
+    "linux": {
+      "target": ["deb"],
+      "category": "science",
+      "maintainer": "Multi3DViz",
+      "desktop": {
+        "Name": "m3v-agent 受控端",
+        "Comment": "Multi3DViz robot-side agent + status shell",
+        "Icon": "m3v-agent",
+        "Terminal": false,
+        "Type": "Application",
+        "Categories": "Science;Robotics;"
+      }
+    },
+    "deb": {
+      "depends": ["python3 (>= 3.8)", "python3-numpy", "python3-scipy", "python3-paramiko", "python3-yaml"],
+      "afterInstall": "packaging/deb/postinst",
+      "afterRemove": "packaging/deb/prerm"
+    }
+  }
+}

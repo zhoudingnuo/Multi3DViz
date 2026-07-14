@@ -1,0 +1,63 @@
+#!/bin/bash
+# postinst — runs after the .deb is installed.
+#
+# Installs the m3v_agent Python deps that aren't apt-provided, drops a default
+# config + systemd unit into place, and refreshes the desktop menu so the
+# "m3v-agent 受控端" launcher appears.
+#
+# The Python package itself ships inside the deb (under /opt/m3v-agent/) so we
+# don't pip-install m3v_agent — only its runtime deps. ROS (noetic/foxy) is
+# assumed pre-installed on the robot (it's not in any standard apt repo).
+
+set -e
+
+INSTALL_DIR="/opt/m3v-agent"
+CONFIG_DIR="/etc/m3v-agent"
+PYTHON="${PYTHON:-python3}"
+
+echo "[m3v-agent:postinst] setting up..."
+
+# 1. Install Python deps not provided by apt (best-effort — pip may need --break-system-packages on newer distros).
+#    Wrapped in timeout so a slow/offline robot doesn't hang dpkg configure.
+echo "[m3v-agent:postinst] checking python deps..."
+if [ -f "$INSTALL_DIR/requirements.txt" ]; then
+    PIP_FLAGS=""
+    if $PYTHON -c "import sys; exit(0 if sys.version_info >= (3,11) else 1)" 2>/dev/null; then
+        PIP_FLAGS="--break-system-packages"
+    fi
+    # 90s ceiling — on a Tegra arm64 with no internet, pip fails fast; on a
+    # connected box it finishes the small deps (scp/paramiko) well under that.
+    timeout 90 $PYTHON -m pip install -q $PIP_FLAGS -r "$INSTALL_DIR/requirements.txt" 2>/dev/null \
+        && echo "[m3v-agent:postinst] python deps ok" \
+        || echo "[m3v-agent:postinst] WARNING: some pip deps skipped (robot may need them manually)"
+fi
+
+# 2. Drop a default config if none exists (don't clobber an existing one).
+mkdir -p "$CONFIG_DIR"
+if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
+    # Pick a sensible default template — unitree is the common case.
+    for tpl in "$INSTALL_DIR/templates/unitree/config.yaml" "$INSTALL_DIR/templates/agibot/config.yaml"; do
+        if [ -f "$tpl" ]; then
+            cp "$tpl" "$CONFIG_DIR/config.yaml"
+            echo "[m3v-agent:postinst] installed default config from $tpl"
+            break
+        fi
+    done
+    echo "[m3v-agent:postinst] EDIT $CONFIG_DIR/config.yaml to set Windows host/user/SSH"
+fi
+
+# 3. Install the systemd unit (optional — user can also launch the desktop app).
+if [ -f "$INSTALL_DIR/packaging/deb/m3v-agent.service" ]; then
+    cp "$INSTALL_DIR/packaging/deb/m3v-agent.service" /etc/systemd/system/ 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+fi
+
+# 4. Refresh desktop menu so the launcher shows up.
+which update-desktop-database >/dev/null 2>&1 && update-desktop-database -q || true
+
+echo "[m3v-agent:postinst] done."
+echo "  Desktop app: launch 'm3v-agent 受控端' from the menu, or run: /opt/m3v-agent/bin/m3v-agent-shell"
+echo "  Config:      $CONFIG_DIR/config.yaml"
+echo "  Service:     sudo systemctl enable --now m3v-agent.service (headless mode, no GUI)"
+
+exit 0

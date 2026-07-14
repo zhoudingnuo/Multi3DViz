@@ -1,0 +1,19 @@
+[Unit]
+Description=Multi3DViz 受控端 agent (Unitree Go2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="PYTHONUNBUFFERED=1"
+# Go2 firmware ships ROS2 under one of these; try in order.
+ExecStart=/bin/bash -c 'for d in /opt/ros/humble /opt/ros/foxy /opt/ros/galactic; do [ -f $d/setup.bash ] && source $d/setup.bash && break; done; exec python3 -m m3v_agent.agent --config /etc/m3v-agent/config.yaml'
+WorkingDirectory=/opt/m3v-agent
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+# Multi3DViz Python dependencies
+#
+# NOTE on environment setup (important — read before recreating):
+# The heavy packages below (open3d, torch, scipy, cv2) are large wheels (GBs)
+# and were *inherited* from the existing hermes-agent venv rather than freshly
+# installed. The project venv at .venv/ was created with:
+#     "<hermes python>" -m venv --system-site-packages .venv
+# and a .pth file (.venv/Lib/site-packages/_inherit_hermes_packages.pth) points
+# at the hermes venv's site-packages so open3d/numpy/scipy/paramiko/torch/cv2
+# resolve. Only `websockets` (small) was installed directly into the project
+# venv. If you ever rebuild the venv from scratch, recreate that .pth or do a
+# full `pip install -r requirements.txt` (will re-download torch+open3d).
+
+# Core
+websockets>=16.0
+
+# Inherited from hermes-agent venv (versions pinned for reference):
+# open3d==0.19.0
+# numpy==2.4.6
+# scipy==1.17.1
+# paramiko==5.0.0
+# torch==2.5.1+cu121
+# opencv-python==4.13.0

@@ -1,0 +1,13 @@
+# Pure-Python deps (installable from PyPI on any platform).
+# ROS (rclpy/rospy + sensor_msgs/nav_msgs) is provided by the robot's
+# /opt/ros/<distro>/setup.bash — do NOT list it here.
+numpy>=1.20
+scipy>=1.5
+paramiko>=3.0
+scp>=0.14
+PyYAML>=5.4
+
+# Robot-specific SDKs (install only on the matching robot):
+#   Agibot  : mc_sdk_zsl_1_py is shipped by the robot vendor under
+#             lib/zsl-1/aarch64/ — point config.sdk_lib_path at it.
+#   Unitree : pip install unitree_sdk2py cyclonedds  (see docs/UNITREE_SDK_NOTES.md)

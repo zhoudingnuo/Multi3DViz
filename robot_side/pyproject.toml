@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "m3v-agent"
+version = "0.1.0"
+description = "Multi3DViz 受控端 agent: FAST-LIO 录制 + 目标执行 + 双机器人 SDK 模板"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Multi3DViz" }]
+
+# ROS (rclpy/rospy + sensor_msgs/nav_msgs) is NOT installable from PyPI — it
+# comes from the robot's apt/rosdep environment. So we declare only the pure
+# Python deps here and mark ROS as optional in the comment below. The deploy
+# scripts check for rclpy/rospy at runtime and tell the user how to source ROS.
+dependencies = [
+    "numpy>=1.20",
+    "scipy>=1.5",
+    "paramiko>=3.0",
+    "scp>=0.14",
+    "PyYAML>=5.4",
+]
+
+[project.optional-dependencies]
+# Install on the dev machine (Windows) for the fake-driver end-to-end test.
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+# After `pip install -e .` on the robot, `m3v-agent` is on PATH.
+m3v-agent = "m3v_agent.agent:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["m3v_agent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,26 @@
+[Unit]
+Description=Multi3DViz 受控端 agent (headless, no GUI)
+After=network-online.target
+Wants=network-online.target
+
+# This unit runs the agent WITHOUT the Electron desktop shell — for robots
+# that run headless (no monitor attached) or for always-on deployment. The
+# desktop app (/opt/m3v-agent/bin/m3v-agent-shell) starts its own agent child,
+# so don't enable this service AND run the desktop app at the same time.
+
+[Service]
+Type=simple
+Environment="PYTHONUNBUFFERED=1"
+# Source ROS before launching so rospy (Unitree noetic) / rclpy (Agibot foxy)
+# is importable. The agent's recorder probes for both and uses whichever the
+# config's `ros:` field selects.
+ExecStart=/bin/bash -c 'for d in /opt/ros/noetic /opt/ros/foxy /opt/ros/humble; do [ -f $d/setup.bash ] && source $d/setup.bash && break; done; cd /opt/m3v-agent && exec python3 -m m3v_agent.agent --config /etc/m3v-agent/config.yaml'
+WorkingDirectory=/opt/m3v-agent
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target

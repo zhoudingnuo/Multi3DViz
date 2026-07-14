@@ -1,0 +1,41 @@
+{
+  "name": "multi3dviz",
+  "version": "0.1.0",
+  "description": "Plugin-based multi-robot collaborative 3D visualization framework",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "backend": "python backend/main.py",
+    "pack:backend": ".venv\\Scripts\\python.exe -m PyInstaller m3v_backend.spec --noconfirm",
+    "dist": "electron-builder --win"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.multi3dviz.app",
+    "productName": "Multi3DViz",
+    "files": [
+      "frontend/**",
+      "electron/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/m3v_backend",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

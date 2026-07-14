@@ -1,0 +1,47 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+robot_side/.venv/
+
+# --- Node / Electron ---
+node_modules/
+robot_side/node_modules/
+dist/
+build/
+out/
+*.log
+npm-debug.log*
+
+# --- App runtime artifacts ---
+output/
+*.png
+!docs/**/*.png
+!robot_side/docs/**/*.png
+*.npy
+*.json.bak
+ccenter_config.json
+multi3dviz_config.json
+backend/logs/
+logs/
+*.crash.log
+# Trained model weights (large, version separately)
+backend/lib/models/*.pt
+backend/lib/models/*.onnx
+
+# --- Build artifacts (regenerable) ---
+m3v_backend.spec.bak
+*.spec.bak
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp

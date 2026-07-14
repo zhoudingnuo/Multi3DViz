@@ -1,0 +1,19 @@
+#!/bin/bash
+# prerm — runs before the .deb is removed.
+#
+# Stops the systemd service (if running) so the agent doesn't keep recording
+# / driving the robot after its package is gone. The desktop app, if open, is
+# just killed by the user. We do NOT delete /etc/m3v-agent/config.yaml here —
+# the user may have edited it and want to keep it across reinstalls; purge does
+# that via postrm instead (not yet wired).
+
+set -e
+
+echo "[m3v-agent:prerm] stopping service if running..."
+if systemctl list-unit-files 2>/dev/null | grep -q m3v-agent.service; then
+    systemctl stop m3v-agent.service 2>/dev/null || true
+    systemctl disable m3v-agent.service 2>/dev/null || true
+fi
+
+echo "[m3v-agent:prerm] done."
+exit 0

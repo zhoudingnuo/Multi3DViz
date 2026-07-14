@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:*;" />
+  <title>Multi3DViz</title>
+  <link rel="stylesheet" href="css/theme.css" />
+</head>
+<body>
+  <div id="app" class="no-grid">
+    <!-- Top bar -->
+    <div id="topbar">
+      <div class="logo"><span class="dot"></span><span>Multi3DViz</span></div>
+      <div class="conn" id="conn"><span class="ind"></span><span class="label">disconnected</span></div>
+    </div>
+
+    <!-- Sidebar: plugin catalog (Displays) -->
+    <div id="sidebar">
+      <div id="plugin-list"></div>
+    </div>
+
+    <!-- 3D viewport -->
+    <div id="viewport">
+      <div class="hint">drag = orbit · right-drag = pan · wheel = zoom · shift+click = set target</div>
+      <div class="empty" id="empty-hint">Enable a Source + a Display to see data</div>
+    </div>
+
+    <!-- 2D top-down grid panel -->
+    <div id="gridpanel">
+      <canvas id="grid-canvas"></canvas>
+      <div class="pick" id="grid-pick"></div>
+    </div>
+
+    <!-- Right control panel: robot fleet + SSH + registration -->
+    <div id="controlpanel">
+      <div id="robot-panel"></div>
+      <div id="reg-panel"></div>
+    </div>
+
+    <!-- Status bar -->
+    <div id="statusbar">
+      <div class="item">frame <b id="st-frame">0/0</b></div>
+      <div class="item">pts <b id="st-pts2">0</b></div>
+      <div class="item">reg <b id="st-reg">idle</b></div>
+      <div class="item">frontier <b id="st-front">0</b></div>
+      <div class="item">explored <b id="st-expl">0%</b></div>
+      <div class="item">robots <b id="st-robots">0/0</b></div>
+      <div class="item" style="margin-left:auto">mem <b id="st-mem">0</b>MB · cpu <b id="st-cpu">0</b>% · fps <b id="st-fps">0</b></div>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
