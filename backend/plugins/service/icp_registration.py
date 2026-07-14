@@ -74,6 +74,8 @@ class ICPRegistrationService(ServicePlugin):
         self._last_merged_frame_b = -1
         self._progress_cb = None         # set by backend to forward to UI
         self._pending_clear = None       # SceneUpdate to emit on next tick (force_reregister)
+        self._traj_a = []                # robot A trail: list of [x,y,z]
+        self._traj_b = []                # robot B trail (in A's frame): list of [x,y,z]
 
     def on_enable(self):
         log.info("ICPRegistration ready")
@@ -93,7 +95,10 @@ class ICPRegistrationService(ServicePlugin):
         # Clear the merged cloud + markers so individual clouds show again.
         # The SceneUpdate is stashed and returned on the next update() tick.
         self._pending_clear = SceneUpdate()
-        self._pending_clear.remove.extend(["merged_cloud", "robot_positions"])
+        self._pending_clear.remove.extend(["merged_cloud", "robot_positions",
+                                           "traj_a", "traj_b"])
+        self._traj_a = []
+        self._traj_b = []
 
     # --- per-tick ---
     def update(self, dt: float):
@@ -245,6 +250,32 @@ class ICPRegistrationService(ServicePlugin):
                 meta={"type": "robot_markers"},
             )
             upd.update.append(marker_obj)
+
+        # --- PUBLISH ROBOT TRAJECTORIES (trail lines) ---
+        # Accumulate each robot's odom into a trail. Only append when the robot
+        # moved > 0.1m from its last trail point (avoids dense stationary clusters).
+        TRAIL_MIN_STEP = 0.1
+        if odom_a:
+            pa = [odom_a.get("x", 0), odom_a.get("y", 0), odom_a.get("z", 0)]
+            if not self._traj_a or np.linalg.norm(np.array(pa) - np.array(self._traj_a[-1])) > TRAIL_MIN_STEP:
+                self._traj_a.append(pa)
+        if odom_b and self._T_b_to_a is not None:
+            bp = np.array([odom_b.get("x", 0), odom_b.get("y", 0), odom_b.get("z", 0), 1.0])
+            bp_a = (self._T_b_to_a @ bp)[:3].tolist()
+            if not self._traj_b or np.linalg.norm(np.array(bp_a) - np.array(self._traj_b[-1])) > TRAIL_MIN_STEP:
+                self._traj_b.append(bp_a)
+        if len(self._traj_a) >= 2:
+            upd.update.append(SceneObject(
+                id="traj_a", kind="line",
+                payload={"positions": np.array(self._traj_a, dtype=np.float32).tolist(),
+                         "color": [1.0, 0.8, 0.0]},  # gold, matches robot A marker
+            ))
+        if len(self._traj_b) >= 2:
+            upd.update.append(SceneObject(
+                id="traj_b", kind="line",
+                payload={"positions": np.array(self._traj_b, dtype=np.float32).tolist(),
+                         "color": [0.0, 1.0, 0.6]},  # mint, matches robot B marker
+            ))
 
         return upd
 

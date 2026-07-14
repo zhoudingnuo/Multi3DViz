@@ -114,6 +114,12 @@ class LocalReplaySource(DataSourcePlugin):
         # When the user seeks, we must force a re-push even if the new frame
         # index is <= _last_pushed (normal tick path skips in that case).
         self._seek_to = None       # int frame to jump to, or None
+        # Publish cache: avoid re-downsampling the same accumulated cloud
+        # every tick. Invalidated when f changes or voxel_size changes.
+        self._cached_pub_frame = -1
+        self._cached_pub_pts = None
+        self._cached_pub_cols = None
+        self._cached_voxel = -1.0
 
     # --- lifecycle ---
     def on_enable(self):
@@ -136,6 +142,11 @@ class LocalReplaySource(DataSourcePlugin):
         self._vis_pts = None
 
     def on_property_change(self, key, value):
+        # Invalidate the publish cache on voxel_size change so the next
+        # publish recomputes at the new resolution.
+        if key == "voxel_size":
+            self._cached_pub_frame = -1
+            self._cached_pub_pts = None
         # Re-load only when data-source identity changes, not on playback tweaks.
         if key in ("data_root", "robot"):
             if self.get("stream_mode", False):
@@ -359,20 +370,32 @@ class LocalReplaySource(DataSourcePlugin):
     def _publish(self, rid, f):
         """Publish accumulated points/colors up to frame f into the data bus.
 
-        GLOBAL voxel downsample is applied here on EVERY publish: we stack all
-        points up to frame f, downsample the whole thing at once (so cross-
-        frame overlap from re-scanning the same space collapses to one point
-        per cell), then cap_accum as a final memory guard. This eliminates the
-        "cloud starts dense then pops sparse" artifact — the density is stable
-        from the very first frame because overlap is always deduplicated."""
-        pts = self._pts_up_to(f)
-        if len(pts) > 0:
-            voxel = float(self.get("voxel_size", 0.1))
-            pts = data_utils.voxel_downsample(pts, voxel)
-            cols = data_utils.height_color_blue_red(pts).astype(np.float32)
+        PERFORMANCE: caches the global voxel-downsampled + colored result keyed
+        by frame index. The expensive vstack+downsample+color only runs when
+        a NEW frame is accumulated — subsequent ticks with the same f reuse the
+        cache. This is critical because voxel_downsample on ~100K points takes
+        ~50ms, and doing it at 30Hz (every tick) pegged the CPU.
+
+        GLOBAL voxel downsample (not per-frame) so cross-frame overlap from
+        re-scanning collapses to one point per cell — eliminates the "dense
+        then pop sparse" artifact."""
+        # Cache hit: same frame as last publish → reuse.
+        if f == self._cached_pub_frame and self._cached_pub_pts is not None:
+            pts = self._cached_pub_pts
+            cols = self._cached_pub_cols
         else:
-            cols = np.empty((0, 3), dtype=np.float32)
-        pts, cols = cap_accum(pts, cols)
+            pts = self._pts_up_to(f)
+            if len(pts) > 0:
+                voxel = float(self.get("voxel_size", 0.1))
+                pts = data_utils.voxel_downsample(pts, voxel)
+                cols = data_utils.height_color_blue_red(pts).astype(np.float32)
+            else:
+                cols = np.empty((0, 3), dtype=np.float32)
+            pts, cols = cap_accum(pts, cols)
+            # Cache for reuse on subsequent ticks with the same f.
+            self._cached_pub_frame = f
+            self._cached_pub_pts = pts
+            self._cached_pub_cols = cols
         self.ctx.data.publish(rid, {
             "robot_id": rid,
             "frame_idx": f,

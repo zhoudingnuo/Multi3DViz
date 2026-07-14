@@ -658,9 +658,10 @@ class Backend:
     @staticmethod
     def _merge_updates(updates: list[SceneUpdate]) -> SceneUpdate:
         """Concatenate add/update/remove across multiple SceneUpdates into one.
-        Later ops for the same id win (last-write)."""
+        Remove takes precedence: if an id is in any remove list, it's stripped
+        from adds/upds so a later plugin's update() can't resurrect a cloud
+        that ICP just removed (the classic "two clouds still showing" bug)."""
         merged = SceneUpdate()
-        # Use dicts keyed by id so later updates override earlier ones.
         adds, upds = {}, {}
         removes = set()
         for u in updates:
@@ -669,6 +670,11 @@ class Backend:
             for o in u.update:
                 upds[o.id] = o
             removes.update(u.remove)
+        # Remove wins — drop any add/update for ids that are being removed.
+        if removes:
+            for rid in removes:
+                adds.pop(rid, None)
+                upds.pop(rid, None)
         merged.add = list(adds.values())
         merged.update = list(upds.values())
         merged.remove = list(removes)
