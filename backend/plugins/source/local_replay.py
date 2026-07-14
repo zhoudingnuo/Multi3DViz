@@ -181,10 +181,15 @@ class LocalReplaySource(DataSourcePlugin):
                     return
                 _, R = data_utils.load_gravity(os.path.dirname(latest))
                 frames = [(R @ f.T).T for f in frames]
-                vis_pts = [data_utils.voxel_downsample(f, voxel) for f in frames]
+                # Keep per-frame arrays for the playback cursor (so _pts_up_to(f)
+                # can show partial accumulation as the cursor advances). The
+                # GLOBAL dedup happens at publish time in _publish() — this
+                # avoids the "dense then pop sparse" artifact from per-frame-
+                # only downsample leaving cross-frame overlap.
+                vis_pts = frames  # raw gravity-corrected, per-frame
                 vis_cum = np.cumsum([0] + [len(p) for p in vis_pts]).tolist()
-                vis_all = np.vstack(vis_pts)
-                colors = data_utils.height_color_blue_red(vis_all)
+                # Colors are recomputed at publish time after global dedup.
+                colors = np.zeros((vis_cum[-1], 3), dtype=np.float32)
                 self._frames = frames
                 self._odom = odom
                 self._vis_pts = vis_pts
@@ -338,16 +343,11 @@ class LocalReplaySource(DataSourcePlugin):
         R = self._stream_R if self._stream_R is not None else np.eye(3)
         for f in new_frames:
             gf = (R @ f.T).T
-            vf = data_utils.voxel_downsample(gf, voxel)
             self._frames.append(gf)
-            self._vis_pts.append(vf)
-            self._vis_cum.append(self._vis_cum[-1] + len(vf))
+            self._vis_pts.append(gf)  # raw gravity-corrected (global dedup at _publish)
+            self._vis_cum.append(self._vis_cum[-1] + len(gf))
         self._odom.extend(new_odom)
-        # Recompute the full color ramp over the accumulated vis cloud
-        # (cheap relative to the downsample, but could be incremental later).
-        if self._vis_pts:
-            vis_all = np.vstack(self._vis_pts)
-            self._vis_colors = data_utils.height_color_blue_red(vis_all)
+        # Colors recomputed at _publish time after global dedup (same as batch).
         self._n = len(self._frames)
         # Publish the full accumulated cloud (cursor == latest in stream mode).
         rid = self.get("robot_id", "robot_a")
@@ -359,11 +359,19 @@ class LocalReplaySource(DataSourcePlugin):
     def _publish(self, rid, f):
         """Publish accumulated points/colors up to frame f into the data bus.
 
-        Caps the published cloud via cap_accum() so a long run (which
-        re-scans overlapping space) doesn't grow unbounded and exhaust GPU
-        memory on the frontend — mirrors ccenter's MAX_ACCUM_PTS guard."""
+        GLOBAL voxel downsample is applied here on EVERY publish: we stack all
+        points up to frame f, downsample the whole thing at once (so cross-
+        frame overlap from re-scanning the same space collapses to one point
+        per cell), then cap_accum as a final memory guard. This eliminates the
+        "cloud starts dense then pops sparse" artifact — the density is stable
+        from the very first frame because overlap is always deduplicated."""
         pts = self._pts_up_to(f)
-        cols = self._colors_up_to(f)
+        if len(pts) > 0:
+            voxel = float(self.get("voxel_size", 0.1))
+            pts = data_utils.voxel_downsample(pts, voxel)
+            cols = data_utils.height_color_blue_red(pts).astype(np.float32)
+        else:
+            cols = np.empty((0, 3), dtype=np.float32)
         pts, cols = cap_accum(pts, cols)
         self.ctx.data.publish(rid, {
             "robot_id": rid,

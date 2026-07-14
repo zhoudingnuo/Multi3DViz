@@ -46,10 +46,12 @@ class PointCloudDisplay(DisplayPlugin):
     default_enabled = True
     multiple = True              # one instance per robot cloud
     # Default: one display per robot so both clouds render on first run.
-    # robot_b uses the 'robot' color mode (green) to distinguish from robot_a.
+    # Both use 'height' color mode (blue→red height ramp) so the user can
+    # see structure immediately. robot_b can be switched to 'robot' (solid
+    # green) from the UI if visual distinction is preferred.
     default_instances = [
         {"robot_id": "robot_a", "color_mode": "height"},
-        {"robot_id": "robot_b", "color_mode": "robot"},
+        {"robot_id": "robot_b", "color_mode": "height"},
     ]
 
     properties = {
