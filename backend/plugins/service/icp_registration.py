@@ -73,6 +73,7 @@ class ICPRegistrationService(ServicePlugin):
         self._last_merged_frame_a = -1
         self._last_merged_frame_b = -1
         self._progress_cb = None         # set by backend to forward to UI
+        self._pending_clear = None       # SceneUpdate to emit on next tick (force_reregister)
 
     def on_enable(self):
         log.info("ICPRegistration ready")
@@ -82,14 +83,26 @@ class ICPRegistrationService(ServicePlugin):
         self._progress_cb = cb
 
     def force_reregister(self):
-        """User-requested re-registration. Resets state so the next tick re-runs ICP."""
+        """User-requested re-registration. Resets state so the next tick re-runs ICP.
+        Also removes the merged cloud + position markers so the pre-registration
+        individual clouds are visible again during the re-run."""
         self._T_b_to_a = None
         self._reg_state = "idle"
         self._last_merged_frame_a = -1
         self._last_merged_frame_b = -1
+        # Clear the merged cloud + markers so individual clouds show again.
+        # The SceneUpdate is stashed and returned on the next update() tick.
+        self._pending_clear = SceneUpdate()
+        self._pending_clear.remove.extend(["merged_cloud", "robot_positions"])
 
     # --- per-tick ---
     def update(self, dt: float):
+        # If a force_reregister is pending, emit the clear first so the old
+        # merged cloud disappears and individual clouds show again.
+        if self._pending_clear is not None:
+            clear = self._pending_clear
+            self._pending_clear = None
+            return clear
         rid_a = self.get("source_a", "robot_a")
         rid_b = self.get("source_b", "robot_b")
         fa = self.ctx.data.latest(rid_a)
@@ -191,6 +204,48 @@ class ICPRegistrationService(ServicePlugin):
         )
         upd = SceneUpdate()
         upd.update.append(obj)
+
+        # --- HIDE the individual pre-registration clouds ---
+        # The PointCloud plugin keeps publishing robot_a_cloud / robot_b_cloud
+        # (it doesn't know ICP succeeded). Remove them so only the merged cloud
+        # is visible after registration.
+        rid_a = self.get("source_a", "robot_a")
+        rid_b = self.get("source_b", "robot_b")
+        upd.remove.append(f"{rid_a}_cloud")
+        upd.remove.append(f"{rid_b}_cloud")
+
+        # --- PUBLISH ROBOT POSITIONS (live odom markers) ---
+        # Draw each robot as a small bright dot at its current odom position
+        # so the user can see where the robots actually are. Robot A is at its
+        # own odom origin frame; Robot B is transformed into A's frame via T.
+        pos_markers = []
+        marker_colors = []
+        marker_size = 0.3  # larger than cloud points so it stands out
+
+        # Robot A position (from its own odom, already in merged frame since
+        # A IS the origin).
+        odom_a = fa.get("odom")
+        if odom_a:
+            pos_markers.append([odom_a.get("x", 0), odom_a.get("y", 0), odom_a.get("z", 0)])
+            marker_colors.append([1.0, 0.8, 0.0])  # gold for A
+        # Robot B position (transform B's odom into A's frame via T_b_to_a).
+        odom_b = fb.get("odom")
+        if odom_b and self._T_b_to_a is not None:
+            bp = np.array([odom_b.get("x", 0), odom_b.get("y", 0), odom_b.get("z", 0), 1.0])
+            bp_a = (self._T_b_to_a @ bp)[:3]
+            pos_markers.append(bp_a.tolist())
+            marker_colors.append([0.0, 1.0, 0.6])  # mint for B
+        if pos_markers:
+            marker_obj = SceneObject(
+                id="robot_positions",
+                kind="points",
+                payload={"positions": np.array(pos_markers, dtype=np.float32),
+                         "colors": np.array(marker_colors, dtype=np.float32),
+                         "point_size": marker_size},
+                meta={"type": "robot_markers"},
+            )
+            upd.update.append(marker_obj)
+
         return upd
 
     def state_snapshot(self):
