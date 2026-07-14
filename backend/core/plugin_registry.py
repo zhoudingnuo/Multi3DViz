@@ -69,9 +69,13 @@ class PluginRegistry:
 
     # --- catalog (for the frontend list) ---
     def catalog(self) -> list[dict]:
-        """Static description of every available plugin TYPE, for the frontend."""
+        """Static description of every available plugin TYPE, for the frontend.
+        Includes missing_deps so the UI can render an 'Install' button for
+        plugins whose optional heavy deps (torch) aren't in the slim build."""
+        from core import optional_deps
         out = []
         for name, cls in sorted(self._catalog.items()):
+            missing = optional_deps.get_missing(name)
             out.append({
                 "name": name,
                 "category": cls.category,
@@ -79,6 +83,7 @@ class PluginRegistry:
                 "default_enabled": cls.default_enabled,
                 "multiple": cls.multiple,
                 "properties": cls.properties,
+                "missing_deps": missing,
             })
         return out
 

@@ -93,6 +93,8 @@ ws.onPlaybackState = (sources) => { /* playback UI removed — data is live-stre
 ws.onRobotStatus = (robots) => { robotPanel.setRobots(robots); };
 ws.onRegistrationStatus = (s) => { regPanel.setStatus(s); };
 ws.onRegistrationProgress = (p) => { regPanel.setProgress(p); };
+ws.onInstallProgress = (p) => { panel.setInstallProgress(p); };
+ws.onPluginStatus = (s) => { panel.setPluginStatus(s); };
 ws.onProcessStats = (s) => {
   document.getElementById('st-mem').textContent = s.mem_mb;
   document.getElementById('st-cpu').textContent = s.cpu_pct;

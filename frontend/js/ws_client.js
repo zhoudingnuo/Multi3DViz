@@ -99,6 +99,8 @@ export class WSClient {
       case 'robot_status': this.onRobotStatus(msg.robots || []); break;
       case 'registration_status': this.onRegistrationStatus(msg); break;
       case 'registration_progress': this.onRegistrationProgress(msg); break;
+      case 'install_progress': this.onInstallProgress && this.onInstallProgress(msg); break;
+      case 'plugin_status': this.onPluginStatus && this.onPluginStatus(msg); break;
       case 'process_stats': this.onProcessStats(msg); break;
       case 'info_state':  this.onInfoState(msg); break;
       case 'log':         this.onLog && this.onLog(msg); break;

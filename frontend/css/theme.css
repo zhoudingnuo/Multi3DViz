@@ -230,6 +230,19 @@ html, body {
 .plugin-type-row .ptype-name { flex: 1; font-weight: 500; font-size: 12px; }
 .plugin-type-row .add-inst { color: var(--accent); }
 
+/* === Optional dependency install (in-app "Install torch" button) === */
+.plugin-row .install-dep {
+  color: var(--status-warn); font-size: 14px;
+}
+.plugin-row .install-dep:hover { color: var(--accent); }
+.plugin-row .install-dep.err { color: var(--status-err); }
+.plugin-row .install-progress {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--status-warn); padding: 0 4px;
+  min-width: 32px; text-align: center;
+}
+.plugin-row .install-done { color: var(--status-ok); font-size: 14px; }
+
 /* === Instance row (one per live multi-instance plugin) === */
 .instance-row {
   display: flex; align-items: center; gap: 6px;

@@ -44,6 +44,9 @@ a = Analysis(
         'open3d',
         'scipy', 'scipy.special',
         'numpy', 'paramiko', 'websockets',
+        # pip module API — used by optional_deps.install() for in-app
+        # "Install torch" feature. pip is pure Python so it freezes fine.
+        'pip', 'pip._internal', 'pip._internal.cli.main',
         # Plugins are imported dynamically (by name) by the registry — list
         # every plugin so PyInstaller freezes them.
         'backend.plugins.source.local_replay',

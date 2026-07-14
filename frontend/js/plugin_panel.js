@@ -17,6 +17,7 @@ export class PluginPanel {
     this.catalog = [];        // [{name, category, multiple, properties, ...}]
     this.instances = [];      // [{name, instance_id, category, properties}]
     this.expanded = new Set(); // instance_ids whose property editor is open
+    this._installStates = {}; // {pluginName: {phase, pct, msg}} — in-app dep install progress
     this._render();
   }
 
@@ -57,12 +58,30 @@ export class PluginPanel {
           html += this._instanceRow(inst, p, true);
         }
       } else {
-        // Single-instance: checkbox toggle.
+        // Single-instance: checkbox toggle. If the plugin has missing optional
+        // deps (e.g. Semantics needs torch), show an "Install" button.
         const on = live.length > 0;
         const inst = live[0];
+        const missing = p.missing_deps || [];
+        const installState = this._installStates[p.name];
+        let installBtn = '';
+        if (missing.length > 0 && !installState) {
+          installBtn = `<button class="btn-icon install-dep" data-install="${esc(missing[0])}" data-plugin="${esc(p.name)}" title="Install ${esc(missing.join(', '))}">⚙</button>`;
+        } else if (installState) {
+          const pct = installState.pct || 0;
+          const phase = installState.phase || '';
+          if (phase === 'done') {
+            installBtn = `<span class="install-done" title="Installed">✓</span>`;
+          } else if (phase === 'error') {
+            installBtn = `<button class="btn-icon install-dep err" data-install="${esc(missing[0] || 'torch')}" data-plugin="${esc(p.name)}" title="Retry: ${esc(installState.msg || 'failed')}">⚠</button>`;
+          } else {
+            installBtn = `<span class="install-progress" title="${esc(installState.msg || phase)}">${Math.round(pct)}%</span>`;
+          }
+        }
         html += `<div class="plugin-row ${on ? 'on' : ''}" data-name="${esc(p.name)}">
-            <input type="checkbox" ${on ? 'checked' : ''} data-toggle="${esc(p.name)}"/>
+            <input type="checkbox" ${on ? 'checked' : ''} data-toggle="${esc(p.name)}" ${missing.length > 0 ? 'disabled title="Install deps first"' : ''}/>
             <span class="name">${esc(p.name)}</span>
+            ${installBtn}
             <span class="cat">${esc(p.category)}</span>
           </div>`;
         if (inst) html += this._instanceRow(inst, p, false);
@@ -132,11 +151,51 @@ export class PluginPanel {
     return `<input type="text" value="${d(val)}" data-instance="${di}" data-prop="${dk}"/>`;
   }
 
+  // --- in-app optional dependency install (torch for Semantics) ---
+  setInstallProgress(p) {
+    // p = {pkg, phase, pct, msg}. Find which plugin owns this dep.
+    for (const item of this.catalog) {
+      if ((item.missing_deps || []).includes(p.pkg)) {
+        this._installStates[item.name] = { phase: p.phase, pct: p.pct || 0, msg: p.msg || '' };
+        this._render();
+        return;
+      }
+    }
+    // Dep might already be satisfied after install — still show progress.
+    this._installStates['_pending'] = { phase: p.phase, pct: p.pct || 0, msg: p.msg || '' };
+    this._render();
+  }
+
+  setPluginStatus(s) {
+    // s = {plugins: [{name, missing_deps, available}]}. Update catalog's
+    // missing_deps so the Install button disappears when deps are met.
+    if (!s.plugins) return;
+    for (const st of s.plugins) {
+      const item = this.catalog.find(c => c.name === st.name);
+      if (item) {
+        item.missing_deps = st.missing_deps || [];
+        if (item.missing_deps.length === 0) delete this._installStates[st.name];
+      }
+    }
+    this._render();
+  }
+
   _wire() {
     // +add instance
     this.root.querySelectorAll('[data-add]').forEach(btn => {
       btn.addEventListener('click', () => {
         this.ws.request({ type: 'add_instance', name: btn.dataset.add });
+      });
+    });
+    // install optional dependency (⚙ button)
+    this.root.querySelectorAll('[data-install]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const pkg = btn.dataset.install;
+        const plugin = btn.dataset.plugin;
+        this._installStates[plugin] = { phase: 'starting', pct: 0, msg: 'Starting...' };
+        this._render();
+        this.ws.request({ type: 'install_dependency', name: pkg });
       });
     });
     // remove instance

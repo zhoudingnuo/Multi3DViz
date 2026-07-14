@@ -87,6 +87,12 @@ if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
 else:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Make previously pip-installed optional deps (torch etc.) importable before
+# any plugin discovery. optional_deps.setup_runtime_path() inserts
+# userData/torch_runtime/ onto sys.path if it exists.
+from core import optional_deps
+optional_deps.setup_runtime_path()
+
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -331,6 +337,18 @@ class Backend:
             # trajectory_plot.save_trajectory_figure.
             path = self._export_trajectory()
             await ws.send(proto.make_response(rid, ok=bool(path), path=path))
+        elif mtype == "install_dependency":
+            # In-app optional dependency install (e.g. torch for Semantics).
+            # Acks immediately, runs pip in a daemon thread, streams progress
+            # via install_progress events (same marshal pattern as ICP register).
+            pkg = msg.get("name", "torch")
+            if optional_deps.is_installed(pkg):
+                await ws.send(proto.make_response(rid, ok=True, already_installed=True))
+            else:
+                optional_deps.install(pkg,
+                                      on_progress=self._forward_install,
+                                      on_done=lambda ok, m: self._on_install_done(pkg, ok, m))
+                await ws.send(proto.make_response(rid, ok=True, installing=True))
         else:
             await ws.send(proto.make_error(rid, f"unknown type {mtype!r}"))
 
@@ -378,6 +396,53 @@ class Backend:
         if self.client is None or self._outbox is None:
             return
         self._outbox.put_nowait(proto.make_msg("registration_progress", **payload))
+
+    # --- optional dependency install (in-app "Install torch" button) ---
+    def _forward_install(self, payload):
+        """pip install progress callback (from the install daemon thread).
+        Marshal onto the loop + push as install_progress — same pattern as
+        _forward_registration."""
+        self._loop.call_soon_threadsafe(self._push_install, payload)
+
+    def _push_install(self, payload):
+        if self.client is None or self._outbox is None:
+            return
+        self._outbox.put_nowait(proto.make_msg("install_progress", **payload))
+
+    def _on_install_done(self, pkg, ok, message):
+        """Called from the install thread when pip finishes. If torch just got
+        installed, re-enable the Semantics plugin so it picks up the new dep."""
+        log.info("install %s %s: %s", pkg, "ok" if ok else "FAILED", message)
+        if ok and pkg == "torch":
+            # Re-import sem_infer (its _try_import_deps cached None; a fresh
+            # module reload picks up the now-importable torch).
+            import importlib
+            try:
+                import lib.sem_infer as _si
+                importlib.reload(_si)
+            except Exception:
+                log.exception("reload sem_infer failed")
+            # Push a plugin_status event so the UI updates the Install button.
+            self._loop.call_soon_threadsafe(self._push_plugin_status)
+        # Clear the install state after a short delay so the UI sees "done".
+        def _clear():
+            import time as _t; _t.sleep(3)
+            optional_deps.clear_state()
+        import threading as _th
+        _th.Thread(target=_clear, daemon=True).start()
+
+    def _push_plugin_status(self):
+        if self.client is None or self._outbox is None:
+            return
+        # Re-compute missing deps for all plugins and broadcast.
+        statuses = []
+        for name in optional_deps.PLUGIN_DEPS:
+            statuses.append({
+                "name": name,
+                "missing_deps": optional_deps.get_missing(name),
+                "available": len(optional_deps.get_missing(name)) == 0,
+            })
+        self._outbox.put_nowait(proto.make_msg("plugin_status", plugins=statuses))
 
     def _route_playback(self, action, value) -> bool:
         """Send a playback command to the first enabled source plugin that
