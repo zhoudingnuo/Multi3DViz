@@ -43,6 +43,13 @@ const grid = new GridView(document.getElementById('grid-canvas'), (p) => {
   gridPick.textContent = `cell (${p.i},${p.j})  world (${p.worldX.toFixed(2)},${p.worldY.toFixed(2)})m  ${vtext}`;
 });
 window.addEventListener('resize', () => { scene.resize(); grid.resize(); });
+// The gridmap canvas lives in the controlpanel — its size isn't known until
+// the CSS layout settles. Poll-resize for the first 2s after load.
+let _rszCount = 0;
+const _rszTimer = setInterval(() => {
+  grid.resize();
+  if (++_rszCount > 20) clearInterval(_rszTimer);
+}, 100);
 
 // --- plugin catalog sidebar ---
 const panel = new PluginPanel(document.getElementById('plugin-list'), ws);
@@ -84,7 +91,8 @@ ws.onSceneGrid = (op) => {
     grid.setSemOverlay(op);
   } else {
     grid.setGrid(op);
-    document.getElementById('app').classList.remove('no-grid');
+    // Gridmap is now a resident component (always visible in controlpanel) —
+    // no need to toggle visibility. Just resize on first data.
     requestAnimationFrame(() => grid.resize());
   }
   report({ event: 'grid', id: op.id, w: op.width, h: op.height });

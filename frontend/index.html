@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="css/theme.css" />
 </head>
 <body>
-  <div id="app" class="no-grid">
+  <div id="app">
     <!-- Top bar -->
     <div id="topbar">
       <div class="logo"><span class="dot"></span><span>Multi3DViz</span></div>
@@ -26,16 +26,18 @@
       <div class="empty" id="empty-hint">Enable a Source + a Display to see data</div>
     </div>
 
-    <!-- 2D top-down grid panel -->
-    <div id="gridpanel">
-      <canvas id="grid-canvas"></canvas>
-      <div class="pick" id="grid-pick"></div>
-    </div>
-
-    <!-- Right control panel: robot fleet + SSH + registration -->
+    <!-- Right control panel: robot fleet + ICP + gridmap (all stacked) -->
     <div id="controlpanel">
       <div id="robot-panel"></div>
       <div id="reg-panel"></div>
+      <!-- 2D top-down gridmap (resident component under ICP card) -->
+      <div id="gridmap-section">
+        <div class="section-title">Gridmap</div>
+        <div id="gridmap-wrap">
+          <canvas id="grid-canvas"></canvas>
+          <div class="pick" id="grid-pick"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Status bar -->

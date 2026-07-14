@@ -48,23 +48,17 @@ html, body {
   user-select: none;
 }
 
-/* === App shell layout: Displays | 3D viewport | 2D grid | Robot/SSH control === */
+/* === App shell layout: Displays | 3D viewport | Robot/SSH/ICP/Grid control === */
 #app {
   display: grid;
-  grid-template-columns: 280px 1fr 380px 280px;
+  grid-template-columns: 280px 1fr 380px;
   grid-template-rows: 36px 1fr 22px;
   grid-template-areas:
-    "topbar      topbar   topbar      topbar"
-    "sidebar     viewport gridpanel   controlpanel"
-    "statusbar   statusbar statusbar  statusbar";
+    "topbar      topbar   topbar"
+    "sidebar     viewport controlpanel"
+    "statusbar   statusbar statusbar";
   height: 100vh;
 }
-/* Collapse the 2D grid panel when there's no grid yet so the 3D viewport gets
-   more width. Toggled by adding .no-grid on #app. */
-#app.no-grid {
-  grid-template-columns: 280px 1fr 0 280px;
-}
-#app.no-grid #gridpanel { display: none; }
 
 #topbar {
   grid-area: topbar;
@@ -193,22 +187,27 @@ html, body {
   display: flex; flex-direction: column; gap: var(--gap-lg);
 }
 
-/* === 2D grid panel (right) === */
-#gridpanel {
-  grid-area: gridpanel;
-  background: var(--bg-elev-1);
-  border-left: 1px solid var(--border);
+/* === 2D gridmap (resident in controlpanel, under ICP card) === */
+#gridmap-section {
+  display: flex; flex-direction: column; gap: 4px;
+}
+#gridmap-wrap {
   position: relative;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  aspect-ratio: 1 / 1;          /* square — gridmaps are square (1200x1200) */
   overflow: hidden;
 }
-#gridpanel canvas { display: block; width: 100%; height: 100%; }
-#gridpanel .pick {
-  position: absolute; bottom: 8px; left: 12px;
-  font-family: var(--font-mono); font-size: 11px;
+#gridmap-wrap canvas { display: block; width: 100%; height: 100%; }
+#gridmap-wrap .pick {
+  position: absolute; bottom: 4px; left: 6px;
+  font-family: var(--font-mono); font-size: 10px;
   color: var(--text-value);
-  background: rgba(30,30,30,0.9);
-  padding: 3px 7px; border-radius: var(--radius-sm);
-  pointer-events: none;
+  background: rgba(24,24,24,0.85);
+  padding: 2px 6px; border-radius: var(--radius-sm);
+  pointer-events: none; max-width: 90%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* === Status bar === */
