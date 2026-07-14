@@ -117,6 +117,20 @@ install_excepthooks()
 HOST = "127.0.0.1"
 TICK_HZ = 30                  # target plugin update rate
 
+# Default robot fleet seeded on first run (empty config). Matches the ccenter
+# deployment: Unitree Go2 (Robot A, password auth) + Agibot D1 (Robot B, key
+# auth). The user can edit/remove these from the right-side control panel.
+DEFAULT_ROBOTS = [
+    {"robot_id": "robot_a", "host": "10.60.77.187", "port": 22,
+     "user": "unitree", "password": "123",
+     "label": "Unitree Go2",
+     "data_path": "", "launch_cmd": ""},
+    {"robot_id": "robot_b", "host": "10.60.77.154", "port": 22,
+     "user": "orin-001", "password": None,
+     "label": "Agibot D1",
+     "data_path": "", "launch_cmd": ""},
+]
+
 
 class Backend:
     """Holds all shared state for one running backend instance."""
@@ -195,10 +209,17 @@ class Backend:
             await websocket.send(proto.make_msg("state",
                                                 enabled=self.registry.enabled_list()))
             # Restore the saved robot fleet (best-effort — hosts may be offline).
-            for rcfg in self.config.get_robots():
+            saved_robots = self.config.get_robots()
+            if not saved_robots:
+                # First run: seed the default dual-robot fleet (Unitree A +
+                # Agibot B) so the right panel isn't empty. These match the
+                # ccenter deployment (unitree@10.60.77.187 pw:123, agibot
+                # key-auth). The user can edit/remove them from the UI.
+                saved_robots = DEFAULT_ROBOTS
+            for rcfg in saved_robots:
                 self.robots.add(RobotConfig(**{k: v for k, v in rcfg.items()
                                               if k in RobotConfig.__dataclass_fields__}))
-            if self.config.get_robots():
+            if self.robots.all():
                 await websocket.send(proto.make_msg("robot_status",
                                                     robots=self.robots.list_state()))
             # Persist the resolved enabled set so first-run defaults get saved
