@@ -298,6 +298,15 @@ html, body {
 .ssh-btn.stop:hover:not(:disabled) { background: rgba(244,135,113,0.15); color: var(--status-err); border-color: var(--status-err); }
 .ssh-btn:disabled { opacity: 0.4; cursor: default; }
 .ssh-btn .ico { display: block; }
+/* Robot mode toggle (在线模式 checkbox) */
+.robot-mode { margin-top: 4px; }
+.mode-toggle {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--text-muted); cursor: pointer;
+}
+.mode-toggle input { accent-color: var(--accent); width: 13px; height: 13px; cursor: pointer; }
+.mode-toggle input:disabled { opacity: 0.3; cursor: default; }
+
 /* Takeover button — toggle state highlighted when active */
 .ssh-btn.takeover { border-color: var(--border-soft); }
 .ssh-btn.takeover:hover:not(:disabled) { border-color: var(--status-warn); color: var(--status-warn); }

@@ -15,6 +15,7 @@ export class RobotPanel {
     this._takeover = null;   // robot_id currently under keyboard control, or null
     this._keys = new Set();  // pressed keys for velocity computation
     this._velTimer = null;   // 10Hz velocity send interval
+    this._streamMode = {};   // {robot_id: bool} — online(stream) vs batch mode per robot
     this._render();
     // Global keyboard handler (bound once, checks _takeover).
     this._onKeyDown = (e) => this._handleKey(e, true);
@@ -66,6 +67,23 @@ export class RobotPanel {
           this._toggleTakeover(rid);
         }
       });
+    // stream/batch mode toggle checkbox
+    el.querySelectorAll('[data-action="stream"]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const rid = cb.dataset.robot;
+        const on = cb.checked;
+        this._streamMode[rid] = on;
+        // Tell the corresponding LocalReplay instance to switch mode.
+        // The instance_id for robot_a's LocalReplay is "LocalReplay#1", etc.
+        // We send set_property to flip stream_mode + instant_load accordingly.
+        // stream ON  → stream_mode=true,  instant_load=false (live, 5min check)
+        // stream OFF → stream_mode=false, instant_load=true  (batch, full history)
+        this.ws.send({ type: 'set_property', name: 'LocalReplay',
+                       key: 'stream_mode', value: on });
+        this.ws.send({ type: 'set_property', name: 'LocalReplay',
+                       key: 'instant_load', value: !on });
+      });
+      });
     });
   }
 
@@ -75,11 +93,18 @@ export class RobotPanel {
     const err = r.error ? `<span class="robot-err">${esc(r.error)}</span>` : '';
     const isTakeover = this._takeover === r.robot_id;
     const dis = online ? '' : 'disabled title="等待 SSH 连接..."';
+    const streamOn = this._streamMode[r.robot_id] === true;
     // Three control buttons always visible; disabled until SSH online.
     const controls = `<div class="robot-ssh">
          <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch" ${dis}>${icon('play', 12)} 启动</button>
          <button class="ssh-btn takeover ${isTakeover ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="takeover" ${dis} title="接管后用 WASD 键盘控制">${isTakeover ? '◉ 接管中' : '⌨ 接管'}</button>
-         <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" ${dis} title="紧急停止">⛔ 急停</button>
+         <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" ${dis} title="紧急停止">${icon('estop', 12)} 急停</button>
+       </div>
+       <div class="robot-mode">
+         <label class="mode-toggle" title="在线模式：只加载 5 分钟内的新数据（stream），否则回放全部历史（batch）">
+           <input type="checkbox" data-robot="${esc(r.robot_id)}" data-action="stream" ${streamOn ? 'checked' : ''} ${dis}/>
+           <span>在线模式</span>
+         </label>
        </div>`;
     // Keyboard hint shown when THIS robot is under takeover.
     const hint = isTakeover

@@ -12,6 +12,8 @@ const PATHS = {
   camera: '<path d="M4 8a2 2 0 012-2h2l1.5-2h5L16 6h2a2 2 0 012 2v9a2 2 0 01-2 2H6a2 2 0 01-2-2V8z"/><circle cx="12" cy="12" r="3.5"/>',
   // status
   dot:   '<circle cx="12" cy="12" r="5" fill="currentColor" stroke="none"/>',
+  // emergency stop (octagon + exclamation mark)
+  estop: '<path d="M8 3h8l5 5v8l-5 5H8l-5-5V8z" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="2"/><path d="M12 8v5" stroke="currentColor" stroke-width="2.2"/><circle cx="12" cy="16.5" r="1.1" fill="currentColor" stroke="none"/>',
 };
 
 export function icon(name, size = 16) {

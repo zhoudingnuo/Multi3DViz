@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import glob
 import threading
 import logging
 import numpy as np
@@ -331,7 +332,12 @@ class LocalReplaySource(DataSourcePlugin):
     def _update_stream(self, dt: float):
         """Stream mode: incrementally poll NEW frames from the latest run dir
         each tick (non-blocking) and append them. Supports a robot actively
-        recording — frames appear as the recorder flushes them to disk."""
+        recording — frames appear as the recorder flushes them to disk.
+
+        FRESHNESS CHECK: if the latest .npy frame is older than 5 minutes,
+        the robot is NOT actively recording — fall back to batch/instant_load
+        so the user sees the full historical cloud instead of waiting for
+        data that isn't coming."""
         # Resolve the run dir once (re-resolve every ~2s in case a new run
         # directory appears when the robot starts a fresh session).
         self._retry_t += dt
@@ -361,6 +367,19 @@ class LocalReplaySource(DataSourcePlugin):
                     self._stream_R = np.eye(3)
         if self._loaded_root is None:
             return None
+        # FRESHNESS CHECK: if the latest .npy in this run dir is older than 5
+        # minutes, the robot stopped recording. Don't sit in stream mode polling
+        # forever — switch to batch/instant_load so the user sees the data.
+        cloud_dir = os.path.join(self._loaded_root, "cloud_registered")
+        npys = sorted(glob.glob(os.path.join(cloud_dir, "*.npy")))
+        if npys:
+            age = time.time() - os.path.getmtime(npys[-1])
+            if age > 300:  # 5 minutes
+                log.info("stream: latest frame %.0fs old (>5min) — falling back to batch", age)
+                self.set("stream_mode", False)
+                self.set("instant_load", True)
+                self._reload()
+                return None
         # Ensure stream accumulators exist (may be None if a batch _reload
         # raced and reset them).
         if self._frames is None:
