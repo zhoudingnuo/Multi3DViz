@@ -12,7 +12,15 @@ export class RobotPanel {
     this.root = rootEl;
     this.ws = ws;
     this.robots = [];        // [{robot_id,label,host,user,state,error,last_seen}]
+    this._takeover = null;   // robot_id currently under keyboard control, or null
+    this._keys = new Set();  // pressed keys for velocity computation
+    this._velTimer = null;   // 10Hz velocity send interval
     this._render();
+    // Global keyboard handler (bound once, checks _takeover).
+    this._onKeyDown = (e) => this._handleKey(e, true);
+    this._onKeyUp = (e) => this._handleKey(e, false);
+    document.addEventListener('keydown', this._onKeyDown);
+    document.addEventListener('keyup', this._onKeyUp);
   }
 
   setRobots(robots) {
@@ -47,10 +55,15 @@ export class RobotPanel {
         if (act === 'remove') {
           if (!confirm(`Remove robot ${rid}?`)) return;
           this.ws.request({ type: 'robot_remove', robot_id: rid });
-        } else if (act === 'launch' || act === 'stop' || act === 'restart') {
+        } else if (act === 'launch' || act === 'stop') {
           btn.disabled = true;
           this.ws.request({ type: 'robot_command', robot_id: rid, action: act })
             .then(r => { btn.disabled = false; this._toast(r); });
+        } else if (act === 'estop') {
+          this.ws.request({ type: 'robot_command', robot_id: rid, action: 'estop' })
+            .then(r => this._toast(r));
+        } else if (act === 'takeover') {
+          this._toggleTakeover(rid);
         }
       });
     });
@@ -60,14 +73,20 @@ export class RobotPanel {
     const cls = stateClass(r.state);
     const online = r.state === 'online';
     const err = r.error ? `<span class="robot-err">${esc(r.error)}</span>` : '';
-    // SSH / FAST-LIO controls: prominent labeled buttons when online.
-    const sshControls = online
+    const isTakeover = this._takeover === r.robot_id;
+    // Three control buttons (only when online): Start FAST-LIO / Takeover / Estop.
+    const controls = online
       ? `<div class="robot-ssh">
-           <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch">${icon('play', 12)} Start FAST-LIO</button>
-           <button class="ssh-btn stop" data-robot="${esc(r.robot_id)}" data-action="stop">${icon('stop', 12)} Stop</button>
+           <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch">${icon('play', 12)} 启动</button>
+           <button class="ssh-btn takeover ${isTakeover ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="takeover" title="接管后用 WASD 键盘控制">${isTakeover ? '◉ 接管中' : '⌨ 接管'}</button>
+           <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" title="紧急停止">⛔ 急停</button>
          </div>`
       : `<div class="robot-ssh offline-note">SSH offline — connect to control</div>`;
-    return `<div class="robot-card ${cls}">
+    // Keyboard hint shown when THIS robot is under takeover.
+    const hint = isTakeover
+      ? `<div class="takeover-hint">W/S 前进后退 · A/D 左右 · Q/E 转向 · 松开=停</div>`
+      : '';
+    return `<div class="robot-card ${cls} ${isTakeover ? 'takeover' : ''}">
         <div class="robot-head">
           <span class="robot-dot"></span>
           <div class="robot-info">
@@ -76,7 +95,8 @@ export class RobotPanel {
           </div>
           <button class="btn-icon danger rm-inst" data-robot="${esc(r.robot_id)}" data-action="remove" title="Remove robot">${icon('trash', 14)}</button>
         </div>
-        ${sshControls}
+        ${controls}
+        ${hint}
       </div>`;
   }
 
@@ -120,6 +140,50 @@ export class RobotPanel {
         this._toast(r);
       });
     });
+  }
+
+  // --- keyboard takeover (WASD velocity control) ---
+  _toggleTakeover(rid) {
+    if (this._takeover === rid) {
+      // Release: send a zero velocity + stop the timer.
+      this._takeover = null;
+      this._keys.clear();
+      if (this._velTimer) { clearInterval(this._velTimer); this._velTimer = null; }
+      this.ws.send({ type: 'robot_vel', robot_id: rid, vx: 0, vy: 0, yaw: 0 });
+    } else {
+      // Take over: start the 10Hz velocity sender.
+      this._takeover = rid;
+      this._keys.clear();
+      if (this._velTimer) clearInterval(this._velTimer);
+      this._velTimer = setInterval(() => this._sendVel(), 100); // 10Hz
+    }
+    this._renderList();
+  }
+
+  _handleKey(e, down) {
+    if (!this._takeover) return;
+    // Ignore key repeat for keydown (browser fires repeatedly).
+    if (down && e.repeat) return;
+    const k = e.key.toLowerCase();
+    if (!'wasdqe '.includes(k)) return;
+    if (down) this._keys.add(k); else this._keys.delete(k);
+    // Prevent page scroll on space.
+    if (k === ' ') e.preventDefault();
+  }
+
+  _sendVel() {
+    if (!this._takeover) return;
+    const k = this._keys;
+    const FWD = 0.4, SIDE = 0.3, TURN = 0.8;
+    let vx = 0, vy = 0, yaw = 0;
+    if (k.has('w')) vx += FWD;
+    if (k.has('s')) vx -= FWD;
+    if (k.has('a')) vy += SIDE;
+    if (k.has('d')) vy -= SIDE;
+    if (k.has('q')) yaw += TURN;
+    if (k.has('e')) yaw -= TURN;
+    if (k.has(' ')) { vx = 0; vy = 0; yaw = 0; } // space = brake
+    this.ws.send({ type: 'robot_vel', robot_id: this._takeover, vx, vy, yaw });
   }
 
   _toast(r) {

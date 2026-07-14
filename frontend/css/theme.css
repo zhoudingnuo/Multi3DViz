@@ -299,6 +299,24 @@ html, body {
 .ssh-btn.stop:hover:not(:disabled) { background: rgba(244,135,113,0.15); color: var(--status-err); border-color: var(--status-err); }
 .ssh-btn:disabled { opacity: 0.4; cursor: default; }
 .ssh-btn .ico { display: block; }
+/* Takeover button — toggle state highlighted when active */
+.ssh-btn.takeover { border-color: var(--border-soft); }
+.ssh-btn.takeover:hover:not(:disabled) { border-color: var(--status-warn); color: var(--status-warn); }
+.ssh-btn.takeover.active {
+  background: rgba(220,220,170,0.15); color: var(--status-warn);
+  border-color: var(--status-warn);
+  box-shadow: 0 0 6px rgba(220,220,170,0.3);
+}
+/* Emergency stop button — red, bold */
+.ssh-btn.estop-btn { font-weight: 600; }
+.ssh-btn.estop-btn:hover:not(:disabled) { background: rgba(244,135,113,0.2); color: var(--status-err); border-color: var(--status-err); }
+/* Takeover mode — card highlighted + hint text */
+.robot-card.takeover { border-left-color: var(--status-warn); box-shadow: 0 0 8px rgba(220,220,170,0.15); }
+.takeover-hint {
+  margin-top: 6px; padding: 4px 8px; border-radius: var(--radius-sm);
+  background: rgba(220,220,170,0.08); color: var(--status-warn);
+  font-family: var(--font-mono); font-size: 10px; text-align: center;
+}
 .offline-note { color: var(--text-muted); font-size: 10px; font-style: italic; padding: 4px 0; }
 
 .robot-empty { color: var(--text-muted); font-size: 11px; padding: 6px 2px; font-style: italic; }

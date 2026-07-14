@@ -320,7 +320,7 @@ class Backend:
         elif mtype == "robot_list":
             await ws.send(proto.make_response(rid, robots=self.robots.list_state()))
         elif mtype == "robot_command":
-            # SSH command on a robot: action launch|stop|restart|run.
+            # SSH command on a robot: action launch|stop|restart|estop|vel|run.
             inst = self.registry.get("SSHLauncher")
             if inst is None:
                 # Try enabling it on demand so the UI works even if it was off.
@@ -331,6 +331,19 @@ class Backend:
                 result = inst.command(msg.get("robot_id"), msg.get("action"),
                                       msg.get("value"))
             await ws.send(proto.make_response(rid, **result))
+        elif mtype == "robot_vel":
+            # Keyboard takeover velocity: {robot_id, vx, vy, yaw}. Fire-and-forget
+            # (no response — frontend sends ~10Hz, acking each would flood).
+            # Routes to SSHLauncher vel action which SSH-sends to the robot.
+            inst = self.registry.get("SSHLauncher")
+            if inst is None:
+                self.registry.enable("SSHLauncher")
+                inst = self.registry.get("SSHLauncher")
+            if inst is not None:
+                inst.command(msg.get("robot_id"), "vel",
+                             {"vx": float(msg.get("vx", 0)),
+                              "vy": float(msg.get("vy", 0)),
+                              "yaw": float(msg.get("yaw", 0))})
         elif mtype == "register":
             # Force (re-)run of ICP registration between source_a/source_b.
             inst = self.registry.get("ICPRegistration")
