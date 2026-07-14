@@ -74,14 +74,13 @@ export class RobotPanel {
     const online = r.state === 'online';
     const err = r.error ? `<span class="robot-err">${esc(r.error)}</span>` : '';
     const isTakeover = this._takeover === r.robot_id;
-    // Three control buttons (only when online): Start FAST-LIO / Takeover / Estop.
-    const controls = online
-      ? `<div class="robot-ssh">
-           <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch">${icon('play', 12)} 启动</button>
-           <button class="ssh-btn takeover ${isTakeover ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="takeover" title="接管后用 WASD 键盘控制">${isTakeover ? '◉ 接管中' : '⌨ 接管'}</button>
-           <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" title="紧急停止">⛔ 急停</button>
-         </div>`
-      : `<div class="robot-ssh offline-note">SSH offline — connect to control</div>`;
+    const dis = online ? '' : 'disabled title="等待 SSH 连接..."';
+    // Three control buttons always visible; disabled until SSH online.
+    const controls = `<div class="robot-ssh">
+         <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch" ${dis}>${icon('play', 12)} 启动</button>
+         <button class="ssh-btn takeover ${isTakeover ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="takeover" ${dis} title="接管后用 WASD 键盘控制">${isTakeover ? '◉ 接管中' : '⌨ 接管'}</button>
+         <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" ${dis} title="紧急停止">⛔ 急停</button>
+       </div>`;
     // Keyboard hint shown when THIS robot is under takeover.
     const hint = isTakeover
       ? `<div class="takeover-hint">W/S 前进后退 · A/D 左右 · Q/E 转向 · 松开=停</div>`
