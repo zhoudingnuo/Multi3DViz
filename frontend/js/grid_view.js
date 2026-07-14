@@ -63,6 +63,14 @@ export class GridView {
     this.draw();
   }
 
+  // Set/clear a target marker (world coords). id = 'target_a' | 'target_b'.
+  setTarget(id, worldXY) {
+    if (!this._targets) this._targets = {};
+    if (worldXY === null) delete this._targets[id];
+    else this._targets[id] = worldXY;
+    this.draw();
+  }
+
   // Receive the semantic overlay grid2d op (UNet classes / room ids).
   setSemOverlay(op) {
     this.semCells = op.cells;
@@ -190,6 +198,27 @@ export class GridView {
         }
       }
       ctx.globalAlpha = 1.0;
+    }
+    // Target markers (crosshair + filled square) — like ccenter's grid panel.
+    // target_a = orange, target_b = magenta. Drawn at world coords.
+    if (this._targets) {
+      const c = this.cellPx;
+      for (const [id, color] of [['target_a', '#e64a00'], ['target_b', '#e600c8']]) {
+        const wxy = this._targets[id];
+        if (!wxy) continue;
+        const gi = (wxy[0] - this.origin[0]) / this.res;
+        const gj = (wxy[1] - this.origin[1]) / this.res;
+        const sx = this.px0 + gi * c;
+        const sy = this.py0 + (this.h - 1 - gj) * c;
+        const r = Math.max(5, c * 2);
+        // Filled square body.
+        ctx.fillStyle = color;
+        ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
+        // White cross.
+        ctx.fillStyle = '#fcfaf8';
+        ctx.fillRect(sx - 2, sy - r * 0.6, 4, r * 1.2);
+        ctx.fillRect(sx - r * 0.6, sy - 2, r * 1.2, 4);
+      }
     }
     // Footer: world extent
     ctx.fillStyle = '#858585';

@@ -76,7 +76,21 @@ ws.onState = (enabled) => {
   report({ event: 'state', n: enabled.length });
 };
 
-ws.onSceneOps = (ops) => { scene.applyOps(ops); };
+ws.onSceneOps = (ops) => {
+  scene.applyOps(ops);
+  // Also route target_a/target_b box positions to the gridmap so it can draw
+  // crosshair markers (like ccenter's grid panel). The 3D viewport shows the
+  // box; the 2D gridmap shows a crosshair at the same world coord.
+  for (const op of ops) {
+    if (op.op === 'remove' && (op.id === 'target_a' || op.id === 'target_b')) {
+      grid.setTarget(op.id, null);
+    } else if ((op.id === 'target_a' || op.id === 'target_b') && op.kind === 'box') {
+      // Box pose is a 4x4 matrix; world x,y from [0][3],[1][3].
+      const wx = op.pose[0][3], wy = op.pose[1][3];
+      grid.setTarget(op.id, [wx, wy]);
+    }
+  }
+};
 ws.onScenePoints = (op) => {
   scene.applyPointsOp(op);
   report({ event: 'points', id: op.id, n: op.positions ? op.positions.length / 3 : 0 });
