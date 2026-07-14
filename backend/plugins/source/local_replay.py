@@ -74,9 +74,15 @@ class LocalReplaySource(DataSourcePlugin):
         "playback_rate": {
             "type": "float",
             "default": 1.0,
-            "min": 0.0, "max": 10.0, "step": 0.1,
+            "min": 0.0, "max": 100.0, "step": 0.5,
             "label": "Playback speed (x)",
             "group": "Playback",
+        },
+        "instant_load": {
+            "type": "bool",
+            "default": True,
+            "label": "Instant load (skip to last frame, no playback)",
+            "group": "Mode",
         },
         "voxel_size": {
             "type": "float",
@@ -192,20 +198,26 @@ class LocalReplaySource(DataSourcePlugin):
                     return
                 _, R = data_utils.load_gravity(os.path.dirname(latest))
                 frames = [(R @ f.T).T for f in frames]
-                # Keep per-frame arrays for the playback cursor (so _pts_up_to(f)
-                # can show partial accumulation as the cursor advances). The
-                # GLOBAL dedup happens at publish time in _publish() — this
-                # avoids the "dense then pop sparse" artifact from per-frame-
-                # only downsample leaving cross-frame overlap.
-                vis_pts = frames  # raw gravity-corrected, per-frame
-                vis_cum = np.cumsum([0] + [len(p) for p in vis_pts]).tolist()
-                # Colors are recomputed at publish time after global dedup.
-                colors = np.zeros((vis_cum[-1], 3), dtype=np.float32)
+                # GLOBAL voxel downsample over ALL frames at once (cross-frame
+                # overlap collapses to one point per cell). With instant_load
+                # (default), we store this as a single precomputed block and
+                # _publish just reuses it every tick — no per-tick recompute.
+                if self.get("instant_load", True):
+                    vis_all_raw = np.vstack(frames) if frames else np.empty((0, 3))
+                    vis_ds = data_utils.voxel_downsample(vis_all_raw, voxel)
+                    vis_pts = [vis_ds]
+                    vis_cum = [0, len(vis_ds)]
+                    vis_colors = data_utils.height_color_blue_red(vis_ds).astype(np.float32)
+                else:
+                    # Per-frame raw (downsample happens at publish time with cache).
+                    vis_pts = frames
+                    vis_cum = np.cumsum([0] + [len(p) for p in vis_pts]).tolist()
+                    vis_colors = np.zeros((vis_cum[-1], 3), dtype=np.float32)
                 self._frames = frames
                 self._odom = odom
                 self._vis_pts = vis_pts
                 self._vis_cum = vis_cum
-                self._vis_colors = colors
+                self._vis_colors = vis_colors
                 self._n = len(frames)
                 self._cursor = 0.0
                 self._last_pushed = 0
@@ -270,7 +282,9 @@ class LocalReplaySource(DataSourcePlugin):
         return self._update_batch(dt)
 
     def _update_batch(self, dt: float):
-        """Batch mode: advance playback cursor over a one-time-loaded run."""
+        """Batch mode: with instant_load (default), publish the pre-downsampled
+        full cloud once then stay idle. Without instant_load, advance a
+        playback cursor frame by frame."""
         if self._frames is None or self._n == 0:
             # Retry load every ~1s until a run directory appears.
             self._retry_t += dt
@@ -287,6 +301,15 @@ class LocalReplaySource(DataSourcePlugin):
             self._publish(rid, f)
             self._last_pushed = f
             return None
+        # instant_load: publish the full pre-downsampled cloud once, then idle.
+        # No per-tick cursor advance — the cloud is already complete. The frame
+        # counter shows total/max so the UI isn't misleading.
+        if self.get("instant_load", True):
+            if self._last_pushed < self._n:
+                self._publish(rid, self._n)
+                self._last_pushed = self._n
+            return None
+        # Per-frame playback mode (instant_load off): advance cursor.
         if not self._playing:
             return None
         rate = float(self.get("playback_rate", 1.0))
@@ -370,16 +393,31 @@ class LocalReplaySource(DataSourcePlugin):
     def _publish(self, rid, f):
         """Publish accumulated points/colors up to frame f into the data bus.
 
-        PERFORMANCE: caches the global voxel-downsampled + colored result keyed
-        by frame index. The expensive vstack+downsample+color only runs when
-        a NEW frame is accumulated — subsequent ticks with the same f reuse the
-        cache. This is critical because voxel_downsample on ~100K points takes
-        ~50ms, and doing it at 30Hz (every tick) pegged the CPU.
+        PERFORMANCE: In batch mode with instant_load (default), we precompute
+        the GLOBALLY downsampled cloud ONCE at load time and reuse it on every
+        publish — no per-tick re-downsample. The playback cursor just slices
+        into the precomputed array. In stream mode or when a new frame arrives,
+        we recompute incrementally but cache by frame index so repeated ticks
+        with the same frame don't re-downsample."""
+        # Fast path: instant_load mode — the full cloud is already downsampled
+        # at load time in _reload(). Just publish it with the current frame idx.
+        if self.get("instant_load", True) and self._vis_pts and len(self._vis_pts) == 1:
+            # _vis_pts[0] is the pre-downsampled full cloud.
+            pts = self._vis_pts[0]
+            cols = self._vis_colors if self._vis_colors is not None and len(self._vis_colors) == len(pts) \
+                else data_utils.height_color_blue_red(pts).astype(np.float32)
+            self.ctx.data.publish(rid, {
+                "robot_id": rid,
+                "frame_idx": f if f > 0 else self._n,
+                "max_frame": self._n,
+                "positions": pts,
+                "colors": cols,
+                "odom": self._odom[min(f - 1, len(self._odom) - 1)]
+                        if self._odom else None,
+            })
+            return
 
-        GLOBAL voxel downsample (not per-frame) so cross-frame overlap from
-        re-scanning collapses to one point per cell — eliminates the "dense
-        then pop sparse" artifact."""
-        # Cache hit: same frame as last publish → reuse.
+        # Slow path: per-frame downsample with cache (stream mode / instant_load off).
         if f == self._cached_pub_frame and self._cached_pub_pts is not None:
             pts = self._cached_pub_pts
             cols = self._cached_pub_cols
@@ -392,7 +430,6 @@ class LocalReplaySource(DataSourcePlugin):
             else:
                 cols = np.empty((0, 3), dtype=np.float32)
             pts, cols = cap_accum(pts, cols)
-            # Cache for reuse on subsequent ticks with the same f.
             self._cached_pub_frame = f
             self._cached_pub_pts = pts
             self._cached_pub_cols = cols
