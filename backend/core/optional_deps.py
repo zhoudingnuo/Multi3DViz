@@ -133,19 +133,24 @@ def install(pkg: str,
         args = ["install", "--target", target, "--no-warn-script-location"]
         index_url = _PIP_INDEX_URLS.get(pkg)
         if index_url:
-            args += ["--index-url", index_url]
+            args += ["--index-url", index_url, "--trusted-host", "download.pytorch.org"]
+        else:
+            args += ["--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org"]
         args.append(pkg)
 
         _emit("downloading", 10, f"Downloading {pkg} (CPU-only)...")
         log.info("pip %s", " ".join(args))
 
-        # pip_main returns 0 on success. We can't easily parse per-file
-        # progress from pip's API (it prints to stdout which we'd have to
-        # capture via redirect), so we emit coarse phases.
+        # Capture pip's stdout+stderr so we can report the real error message
+        # if it fails (the default pip_main prints to sys.stdout/stderr which
+        # in a frozen GUI build goes nowhere). Redirect to a StringIO.
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        buf_out, buf_err = io.StringIO(), io.StringIO()
         try:
-            rc = pip_main(args)
+            with redirect_stdout(buf_out), redirect_stderr(buf_err):
+                rc = pip_main(args)
         except SystemExit as e:
-            # pip_main sometimes calls sys.exit — catch it.
             rc = int(e.code) if e.code is not None else 1
         except Exception as e:
             _emit("error", 0, f"pip crashed: {e}")
@@ -154,9 +159,10 @@ def install(pkg: str,
             return
 
         if rc != 0:
-            _emit("error", 0, f"pip exited with code {rc}")
+            err_text = (buf_err.getvalue() + buf_out.getvalue()).strip()[-300:]
+            _emit("error", 0, f"pip exit {rc}: {err_text[:200]}")
             if on_done:
-                on_done(False, f"pip install failed (exit {rc})")
+                on_done(False, f"pip install failed (exit {rc}): {err_text[:200]}")
             return
 
         # Success — make sure the new package is importable.

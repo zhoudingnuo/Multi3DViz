@@ -32,6 +32,12 @@ _datas = [
 # open3d ships bundled resource files (DLLs, configs) loaded at runtime.
 # (torch is excluded — slim build.)
 _datas += collect_data_files('open3d')
+# pip is needed for in-app optional dep install (optional_deps.install()).
+# Collect its full submodule tree + data — pip dynamically imports many
+# internal modules at runtime that static analysis misses.
+_pip_hidden = collect_submodules('pip')
+# pip's vendored certifi (cacert.pem) must be on disk for HTTPS downloads.
+_datas += collect_data_files('pip')
 
 
 a = Analysis(
@@ -44,9 +50,10 @@ a = Analysis(
         'open3d',
         'scipy', 'scipy.special',
         'numpy', 'paramiko', 'websockets',
-        # pip module API — used by optional_deps.install() for in-app
-        # "Install torch" feature. pip is pure Python so it freezes fine.
-        'pip', 'pip._internal', 'pip._internal.cli.main',
+        # pip full submodule tree — needed for in-app optional dep install
+        # (optional_deps.install calls pip._internal.cli.main.main).
+        # pip dynamically imports commands/resolvers at runtime.
+    ] + _pip_hidden + [
         # Plugins are imported dynamically (by name) by the registry — list
         # every plugin so PyInstaller freezes them.
         'backend.plugins.source.local_replay',
