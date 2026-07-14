@@ -74,6 +74,7 @@ class ExplorerService(ServicePlugin):
         super().__init__(ctx)
         self._explorer = None
         self._gmap = None
+        self._batch_marked = False  # batch mark_explored over all odom (once)
         self._T_b_to_a = None
         self._traj_a = []   # list of (wx, wy) merged-frame
         self._traj_b = []
@@ -128,6 +129,16 @@ class ExplorerService(ServicePlugin):
         if self._explorer is None or self._gmap is None:
             return None
 
+        # On first entry after grid+explorer creation, do a BATCH mark_explored
+        # over ALL recorded odom positions — not just the latest. ccenter does
+        # this naturally because its playback cursor advances frame by frame
+        # and mark_explored runs each tick. But Multi3DViz's instant_load mode
+        # publishes odom[-1] every tick (the final pose), so without this batch
+        # pass only a single disk at the endpoint would be marked explored.
+        if not self._batch_marked:
+            self._batch_mark_explored(fa, fb, T)
+            self._batch_marked = True
+
         # Current robot positions in merged frame: (wx, wy, yaw).
         pos_a = self._robot_pos(fa, np.eye(4))
         pos_b = self._robot_pos(fb, T)
@@ -179,6 +190,27 @@ class ExplorerService(ServicePlugin):
             self._gmap = GridMap()
             self._explorer = DualAgentExplorer(self._gmap)
         self._gmap.update(merged)
+
+    def _batch_mark_explored(self, fa, fb, T):
+        """Walk ALL odom positions for both robots and mark_explored at each —
+        reproducing what ccenter does naturally as its playback cursor sweeps
+        frame by frame. Without this, instant_load mode publishes only odom[-1]
+        and mark_explored sees just the final pose → a single explored disk
+        instead of the full swept trail. This runs ONCE after grid+explorer
+        creation, then the per-tick mark_explored handles live updates."""
+        log.info("batch mark_explored: sweeping all odom positions...")
+        for frame, T_to_merged, label in [(fa, np.eye(4), "A"), (fb, T, "B")]:
+            all_odom = frame.get("all_odom") if frame else None
+            if not all_odom:
+                continue
+            n = 0
+            for odom in all_odom:
+                pos = self._robot_pos({"odom": odom}, T_to_merged)
+                if pos is not None:
+                    wx, wy, yaw = pos
+                    self._explorer.mark_explored((wx, wy), yaw=yaw)
+                    n += 1
+            log.info("  robot %s: marked %d odom positions", label, n)
 
     @staticmethod
     def _robot_pos(frame, T_to_merged):

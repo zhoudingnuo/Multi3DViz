@@ -426,6 +426,7 @@ class LocalReplaySource(DataSourcePlugin):
                 "positions": self._cached_pub_pts,
                 "colors": self._cached_pub_cols,
                 "odom": self._odom[-1] if self._odom else None,
+                "all_odom": self._odom,
             })
         self._last_pushed = self._n
         return None
@@ -454,6 +455,7 @@ class LocalReplaySource(DataSourcePlugin):
                 "colors": cols,
                 "odom": self._odom[min(f - 1, len(self._odom) - 1)]
                         if self._odom else None,
+                "all_odom": self._odom,
             })
             return
 
@@ -481,6 +483,7 @@ class LocalReplaySource(DataSourcePlugin):
             "colors": cols,
             "odom": self._odom[min(f - 1, len(self._odom) - 1)]
                     if self._odom else None,
+            "all_odom": self._odom,
         })
 
     def _pts_up_to(self, f: int) -> np.ndarray:
