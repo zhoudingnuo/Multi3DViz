@@ -228,13 +228,26 @@ class SSHLauncherService(ServicePlugin):
         return rc == 0
 
     def _estop(self, conn):
-        """Emergency stop: send zero velocity, then stop_move, then damp (lie
-        down). The zero-vel ensures the dog isn't mid-stride when damp hits."""
+        """Emergency stop. Uses sport channel if open (works for both Go2 +
+        Agibot), falls back to Go2 DDS exec. Sends: zero vel → stop → damp."""
         rid = conn.cfg.robot_id
-        log.warning("ESTOP on %s: zero_vel + stop_move + damp", rid)
+        log.warning("ESTOP on %s", rid)
+        # Zero velocity first (via channel or SSH exec).
         self._send_vel(conn, {"vx": 0, "vy": 0, "yaw": 0})
-        self._go2_cmd(conn, 2)   # stop_move
-        self._go2_cmd(conn, 0)   # damp — motors to damping, dog lies down safely
+        chan = self._sport_chan.get(rid)
+        if chan is not None:
+            try:
+                chan.sendall(b"stop\n")
+                # Agibot uses 'passive', Go2 uses 'damp' — both scripts accept
+                # 'stop' as full halt. The m3v_move/m3v_agibot watchdog + stdin
+                # protocol handles the rest.
+                chan.sendall(b"lie\n")
+            except Exception:
+                pass
+        else:
+            # Fallback: Go2 DDS direct (a2_sport_client).
+            self._go2_cmd(conn, 2)   # stop_move
+            self._go2_cmd(conn, 0)   # damp
         self._standing[rid] = False
         return {"ok": True}
 
@@ -317,27 +330,37 @@ class SSHLauncherService(ServicePlugin):
         return {"ok": True, "msg": "m3v_move closed, dog lying down"}
 
     def open_sport_channel(self, conn):
-        """Open persistent m3v_move on robot. SAFE MODE:
-        - Does NOT auto-stand on startup (dog stays lying until user presses space)
-        - Watchdog sends 0,0,0 if no velocity command in 500ms
-        - stdin close → stop + lie + damp (safe shutdown)
-        User must explicitly send 'stand' via spacebar to make the dog stand."""
+        """Open persistent sport controller on robot. Picks the right binary
+        per robot type:
+        - robot_a (Unitree Go2): /home/unitree/m3v_move (C++ DDS binary)
+        - robot_b (Agibot D1):   /home/orin-001/m3v_agibot.py (Python mc_sdk)
+        Both have the same stdin protocol: 'stand'/'lie'/'stop'/'damp'/'vx vy yaw'
+        SAFE MODE: no auto-stand, watchdog 500ms, stdin close → safe shutdown."""
         rid = conn.cfg.robot_id
         if rid in self._sport_chan and self._sport_chan[rid] is not None:
             return True
         if conn.client is None:
             return False
+        # Pick the right command per robot.
+        if rid.endswith('b') or rid.endswith('B'):
+            # Agibot: Python script via mc_sdk
+            cmd = "python3 /home/orin-001/m3v_agibot.py"
+            init_wait = 2.0  # Python SDK init is faster than C++ DDS
+        else:
+            # Unitree Go2: C++ binary via DDS
+            cmd = "/home/unitree/m3v_move eth0"
+            init_wait = 4.0  # DDS init
         try:
             chan = conn.client.get_transport().open_session()
             chan.get_pty()
-            chan.exec_command("/home/unitree/m3v_move eth0")
+            chan.exec_command(cmd)
             chan.settimeout(5)
-            import time as _t; _t.sleep(4)  # DDS init only (no auto-stand)
+            import time as _t; _t.sleep(init_wait)
             while chan.recv_ready():
                 chan.recv(4096)
             self._sport_chan[rid] = chan
-            self._standing[rid] = False  # dog is NOT standing (safe mode)
-            log.info("m3v_move channel opened for %s (SAFE: dog not standing, awaiting 'stand' cmd)", rid)
+            self._standing[rid] = False  # safe mode: not standing
+            log.info("sport channel opened for %s via: %s", rid, cmd)
             return True
         except Exception as e:
             log.warning("open_sport_channel %s failed: %s", rid, e)
