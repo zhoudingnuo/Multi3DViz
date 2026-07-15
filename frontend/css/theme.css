@@ -459,6 +459,7 @@ html, body {
 #dbg-log {
   overflow-y: auto; padding: 4px 8px; flex: 1;
   line-height: 1.5; color: var(--text-value);
+  -webkit-user-select: text; user-select: text; cursor: text;
 }
 #dbg-log .dbg-line { white-space: pre-wrap; word-break: break-all; }
 #dbg-log .dbg-time { color: var(--text-muted); }
