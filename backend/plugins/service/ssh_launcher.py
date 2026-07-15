@@ -180,12 +180,28 @@ class SSHLauncherService(ServicePlugin):
         log.info("stopped pipeline on %s", rid)
         return {"ok": True}
 
+    def _go2_cmd(self, conn, cmd_id):
+        """Send a motion command to the Go2 via DDS (unitree_sdk2 a2_sport_client).
+        Direct DDS connection to the Go2 motion controller at 192.168.123.222
+        via eth0 — no TCP bridge (go2_bridge_ros2.py) needed.
+
+        cmd_id maps to a2_sport_client's menu:
+          0=damp(急停阻尼) 1=balance_stand 2=stop_move 3=stand_down(趴下)
+          4=recovery_stand 5=move(vx,vy,yaw) 11=stand_up(站立)
+        Returns True if the command was accepted (code 0)."""
+        rid = conn.cfg.robot_id
+        # Run a2_sport_client interactively: pipe the cmd_id into stdin, capture stdout.
+        # timeout 5 kills it if it hangs (e.g. motion controller unreachable).
+        ssh_cmd = f"echo '{cmd_id}' | timeout 5 /home/unitree/unitree_sdk2-main/build/bin/a2_sport_client eth0 2>&1"
+        rc, out = conn.run(ssh_cmd, timeout=8)
+        ok = "Request successed" in out or "code: 0" in out
+        log.info("go2_cmd %s id=%d: %s (%s)", rid, cmd_id, "OK" if ok else "FAIL", out[-80:])
+        return ok
+
     def _tcp_bridge_cmd(self, conn, api_id, parameter=None):
-        """Send a single command to the Go2 TCP bridge (localhost:21520) via SSH.
-        api_id follows the Go2TcpClient protocol:
-          1002 = BALANCESTAND, 1003 = STOPMOVE, 1004 = STANDUP,
-          1006 = RECOVERYSTAND, 1008 = MOVE.
-        parameter is a dict (e.g. {"x":0,"y":0,"z":0} for MOVE) or None."""
+        """Legacy TCP bridge command (localhost:21520). Kept as fallback for
+        robots that run go2_bridge_ros2.py. New deployments use _go2_cmd (DDS
+        direct) which doesn't require the bridge process to be running."""
         param_str = json.dumps(parameter or {})
         py = (
             "python3 -c \""
@@ -201,31 +217,28 @@ class SSHLauncherService(ServicePlugin):
         return rc == 0
 
     def _estop(self, conn):
-        """Emergency stop: stop all motion (api 1003 STOPMOVE) then lie down
-        (api 1006 RECOVERYSTAND makes the dog drop to a safe prone posture).
-        Two sequential TCP bridge commands via SSH."""
+        """Emergency stop: stop all motion then damp (motors to safe damping).
+        Uses DDS direct (a2_sport_client) — no bridge needed.
+        cmd 2 = stop_move, cmd 0 = damp (motors release to damping, dog drops)."""
         rid = conn.cfg.robot_id
-        log.warning("ESTOP on %s: stopmove + recovery_stand", rid)
-        # 1) Stop all motion immediately.
-        self._tcp_bridge_cmd(conn, 1003)
-        # 2) Recovery stand → dog drops to safe prone position.
-        self._tcp_bridge_cmd(conn, 1006)
+        log.warning("ESTOP on %s: stop_move + damp", rid)
+        self._go2_cmd(conn, 2)   # stop_move
+        self._go2_cmd(conn, 0)   # damp — motors to damping, dog lies down safely
         return {"ok": True}
 
     def _stand_up(self, conn):
-        """Stand the dog up (api 1004 STANDUP). Must be called before MOVE
+        """Stand the dog up (cmd 11 = stand_up). Must be called before MOVE
         commands or takeover — the dog won't move while prone."""
         rid = conn.cfg.robot_id
         log.info("STANDUP on %s", rid)
-        ok = self._tcp_bridge_cmd(conn, 1004)
+        ok = self._go2_cmd(conn, 11)   # stand_up
         return {"ok": ok}
 
     def _lie_down(self, conn):
-        """Lie the dog down (api 1006 RECOVERYSTAND from standing drops to prone).
-        Safe resting posture — motors locked."""
+        """Lie the dog down (cmd 3 = stand_down). Safe resting posture."""
         rid = conn.cfg.robot_id
         log.info("LIEDOWN on %s", rid)
-        ok = self._tcp_bridge_cmd(conn, 1006)
+        ok = self._go2_cmd(conn, 3)   # stand_down
         return {"ok": ok}
 
     def _send_vel(self, conn, value):
