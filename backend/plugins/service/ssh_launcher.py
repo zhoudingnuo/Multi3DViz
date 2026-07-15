@@ -100,6 +100,9 @@ class SSHLauncherService(ServicePlugin):
             return self._takeover_start(conn)
         if action == "takeover_end":
             return self._takeover_end(conn)
+        if action == "channel_status":
+            rid2 = conn.cfg.robot_id
+            return {"ok": True, "ready": self._sport_chan.get(rid2) is not None}
         if action == "stand_up":
             return self._stand_up(conn)
         if action == "lie_down":

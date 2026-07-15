@@ -348,6 +348,11 @@ html, body {
   border-color: var(--status-warn);
   box-shadow: 0 0 6px rgba(220,220,170,0.3);
 }
+.ssh-btn.takeover.loading {
+  color: var(--text-muted); border-color: var(--border);
+  animation: pulse 1s infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
 /* Emergency stop button — red, bold */
 .ssh-btn.estop-btn { font-weight: 600; }
 .ssh-btn.estop-btn:hover:not(:disabled) { background: rgba(244,135,113,0.2); color: var(--status-err); border-color: var(--status-err); }

@@ -13,6 +13,7 @@ export class RobotPanel {
     this.ws = ws;
     this.robots = [];        // [{robot_id,label,host,user,state,error,last_seen}]
     this._takeover = null;   // robot_id currently under keyboard control, or null
+    this._takeoverLoading = null; // robot_id whose channel is opening (spinner state)
     this._keys = new Set();  // pressed keys for velocity computation
     this._velTimer = null;   // 10Hz velocity send interval
     this._streamMode = {};   // {robot_id: bool} — online(stream) vs batch mode per robot
@@ -121,14 +122,23 @@ export class RobotPanel {
     const online = r.state === 'online';
     const err = r.error ? `<span class="robot-err">${esc(r.error)}</span>` : '';
     const isTakeover = this._takeover === r.robot_id;
+    const isTakeoverLoading = this._takeoverLoading === r.robot_id;
     const dis = online ? '' : 'disabled title="等待 SSH 连接..."';
     const streamOn = this._streamMode[r.robot_id] === true;
     const exploreOn = this._exploreMode[r.robot_id] === true;
-    // Control buttons always visible; disabled until SSH online.
+    // Takeover button: 3 states — idle / loading (channel opening) / active
+    let takeoverBtn;
+    if (isTakeover && !isTakeoverLoading) {
+      takeoverBtn = `<button class="ssh-btn takeover active" data-robot="${esc(r.robot_id)}" data-action="takeover">◉ 接管中</button>`;
+    } else if (isTakeoverLoading) {
+      takeoverBtn = `<button class="ssh-btn takeover loading" disabled>⏳ 连接中...</button>`;
+    } else {
+      takeoverBtn = `<button class="ssh-btn takeover" data-robot="${esc(r.robot_id)}" data-action="takeover" ${dis} title="接管后用 WASD 键盘控制">⌨ 接管</button>`;
+    }
     const controls = `<div class="robot-ssh">
          <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch" ${dis} title="SSH 拉起 FAST-LIO + 录制 + 桥接全套">${icon('play', 12)} 启动</button>
          <button class="ssh-btn explore-btn ${exploreOn ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="toggle_explore" ${dis} title="${exploreOn ? '自动探索中（点击关闭）' : '开启自动探索'}">${icon('refresh', 12)} ${exploreOn ? '◉ 探索' : '探索'}</button>
-         <button class="ssh-btn takeover ${isTakeover ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="takeover" ${dis} title="接管后用 WASD 键盘控制">${isTakeover ? '◉ 接管中' : '⌨ 接管'}</button>
+         ${takeoverBtn}
          <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" ${dis} title="紧急停止：停运动+趴下">${icon('estop', 12)} 急停</button>
        </div>
        <div class="robot-mode">
@@ -202,31 +212,48 @@ export class RobotPanel {
   _toggleTakeover(rid) {
     if (window.dbg) window.dbg(`takeover toggle: ${rid} (currently ${this._takeover || 'none'})`, 'warn');
     if (this._takeover === rid) {
-      // Release: tell backend to close m3v_move (dog lies down).
+      // Release: close channel (dog lies down + damp).
       this._takeover = null;
+      this._takeoverLoading = null;
       this._keys.clear();
       if (this._velTimer) { clearInterval(this._velTimer); this._velTimer = null; }
       this.ws.request({ type: 'robot_command', robot_id: rid, action: 'takeover_end' })
         .then(r => { if (window.dbg) window.dbg(`takeover_end: ${JSON.stringify(r)}`, r.ok ? 'ok' : 'err'); });
     } else {
-      // Take over: tell backend to open m3v_move (dog stands up), then start vel sender.
+      // Take over: show loading state, send takeover_start, poll for channel ready.
       this._takeover = rid;
+      this._takeoverLoading = rid;  // triggers "⏳ 连接中..." button
       this._keys.clear();
+      this._renderList();
       this.ws.request({ type: 'robot_command', robot_id: rid, action: 'takeover_start' })
         .then(r => {
           if (window.dbg) window.dbg(`takeover_start: ${JSON.stringify(r)}`, r.ok ? 'ok' : 'err');
-          if (r && r.ok) {
-            this._velTimer = setInterval(() => this._sendVel(), 100);
-            if (window.dbg) window.dbg(`takeover active for ${rid} — channel starting in bg, press SPACE to stand`, 'ok');
-          } else {
+          if (!r || !r.ok) {
             if (window.dbg) window.dbg(`takeover FAILED`, 'err');
             this._takeover = null;
+            this._takeoverLoading = null;
             this._renderList();
+            return;
           }
+          // Poll backend every 500ms to check if channel is ready.
+          const poll = () => {
+            this.ws.request({ type: 'robot_command', robot_id: rid, action: 'channel_status' })
+              .then(sr => {
+                if (sr && sr.ready) {
+                  // Channel ready — start velocity sender + clear loading.
+                  this._takeoverLoading = null;
+                  if (this._velTimer) clearInterval(this._velTimer);
+                  this._velTimer = setInterval(() => this._sendVel(), 100);
+                  if (window.dbg) window.dbg(`channel READY for ${rid} — press SPACE to stand, WASD to move`, 'ok');
+                  this._renderList();
+                } else if (this._takeoverLoading === rid) {
+                  // Still loading — keep polling.
+                  setTimeout(poll, 500);
+                }
+              });
+          };
+          setTimeout(poll, 1000);  // first poll after 1s
         });
-      // Start timer optimistically (will be cleared if start fails).
-      if (this._velTimer) clearInterval(this._velTimer);
-      this._velTimer = setInterval(() => this._sendVel(), 100);
     }
     this._renderList();
   }
