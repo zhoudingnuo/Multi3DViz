@@ -291,10 +291,23 @@ class Backend:
             self._persist_enabled()
         elif mtype == "set_property":
             # Set a property on a specific instance (by instance_id) or a
-            # singleton (by name).
-            key = msg.get("instance_id") or msg.get("name")
+            # singleton (by name). When name is used and multiple instances
+            # exist, apply to ALL matching instances (e.g. stream_mode on
+            # every LocalReplay).
+            iid = msg.get("instance_id")
+            name = msg.get("name")
             pkey, val = msg.get("key"), msg.get("value")
-            ok = self.registry.set_property(key, pkey, val) if key else False
+            if iid:
+                ok = self.registry.set_property(iid, pkey, val)
+            elif name:
+                # Apply to all instances matching this plugin name.
+                ok = False
+                for e in self.registry.enabled_list():
+                    if e["name"] == name:
+                        if self.registry.set_property(e["instance_id"], pkey, val):
+                            ok = True
+            else:
+                ok = False
             await ws.send(proto.make_response(rid, ok=ok))
         elif mtype == "get_state":
             await ws.send(proto.make_response(rid,

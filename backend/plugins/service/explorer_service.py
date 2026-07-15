@@ -319,7 +319,14 @@ class ExplorerService(ServicePlugin):
         cov[gmap.grid == 100] = 100
         cov[ex.explored] = 1
         if ex.frontier_cells is not None and ex.frontier_cells.shape == cov.shape:
-            cov[ex.frontier_cells] = 2
+            # Guard: only mark frontiers if we have meaningful explored area
+            # AND the frontier count is reasonable (< 30% of free cells).
+            # Without this guard, early explorer runs with nearly-empty explored
+            # masks produce frontier_cells covering the entire grid → all yellow.
+            n_frontier = int(ex.frontier_cells.sum())
+            n_free = int((gmap.grid == 0).sum())
+            if n_free > 0 and n_frontier < n_free * 0.3:
+                cov[ex.frontier_cells] = 2
         upd.update.append(SceneObject(
             id="explorer_overlay",
             kind="grid2d",

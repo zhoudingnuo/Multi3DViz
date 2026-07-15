@@ -107,11 +107,12 @@ export class RobotPanel {
         try { localStorage.setItem('m3v_streamMode', JSON.stringify(this._streamMode)); } catch(_) {}
         // Send to the matching LocalReplay instance (by instance_id).
         // LocalReplay#1 = robot_a, LocalReplay#2 = robot_b.
-        const instNum = rid.endsWith('a') || rid.endsWith('A') ? 1 : 2;
-        const iid = `LocalReplay#${instNum}`;
-        this.ws.send({ type: 'set_property', instance_id: iid, key: 'stream_mode', value: on });
-        this.ws.send({ type: 'set_property', instance_id: iid, key: 'instant_load', value: !on });
-        if (window.dbg) window.dbg(`在线模式 ${rid}: ${on ? 'ON (stream)' : 'OFF (batch)'} → ${iid}`, 'warn');
+        // Send to ALL LocalReplay instances (set_property with name applies
+        # to every matching instance). This is simpler and more robust than
+        // guessing instance_ids.
+        this.ws.send({ type: 'set_property', name: 'LocalReplay', key: 'stream_mode', value: on });
+        this.ws.send({ type: 'set_property', name: 'LocalReplay', key: 'instant_load', value: !on });
+        if (window.dbg) window.dbg(`在线模式 ${rid}: ${on ? 'ON (stream)' : 'OFF (batch)'}`, 'warn');
       });
       });
     });
@@ -268,13 +269,16 @@ export class RobotPanel {
   }
 
   _handleSpace() {
-    // Space = toggle stand/lie (one-shot, not held). Sends a command via SSH
-    // to the robot's TCP bridge (Unitree api 1004 standUp / 1006 recoveryStand
-    // alternating with lie-down).
     if (!this._takeover) return;
+    if (this._takeoverLoading) {
+      if (window.dbg) window.dbg('space ignored — channel still opening', 'warn');
+      return;
+    }
     this.ws.request({ type: 'robot_command', robot_id: this._takeover,
                       action: 'toggle_pose' })
-      .then(r => this._toast(r));
+      .then(r => {
+        if (window.dbg) window.dbg(`toggle_pose: ${JSON.stringify(r)}`, r.ok ? 'ok' : 'err');
+      });
   }
 
   _sendVel() {
