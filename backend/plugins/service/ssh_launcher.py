@@ -236,21 +236,22 @@ class SSHLauncherService(ServicePlugin):
         return {"ok": True}
 
     def _toggle_pose(self, conn):
-        """Toggle between standing and lying down via spacebar.
-        Uses recovery_stand (cmd 4) to stand up — this is the ONLY command
-        that works from PASSIVE (lying/damp) mode. stand_up (cmd 11) fails
-        when the dog is PASSIVE. Uses stand_down (cmd 3) to lie down."""
+        """Toggle stand/lie via the m3v_move channel (spacebar during takeover).
+        Writes 'stand' or 'lie' to stdin — m3v_move handles the DDS calls."""
         rid = conn.cfg.robot_id
         standing = self._standing.get(rid, False)
-        if standing:
-            log.info("TOGGLE_POSE %s: standing → lying (cmd 3)", rid)
-            ok = self._go2_cmd(conn, 3)   # stand_down
-            self._standing[rid] = False
-        else:
-            log.info("TOGGLE_POSE %s: lying → standing (cmd 4 recovery_stand)", rid)
-            ok = self._go2_cmd(conn, 4)   # recovery_stand — works from PASSIVE
-            self._standing[rid] = True
-        return {"ok": ok, "standing": self._standing[rid]}
+        chan = self._sport_chan.get(rid)
+        if chan is None:
+            return {"ok": False, "error": "no sport channel open"}
+        cmd = "lie" if standing else "stand"
+        try:
+            chan.sendall((cmd + "\n").encode())
+            self._standing[rid] = not standing
+            log.info("toggle_pose %s: %s", rid, cmd)
+            return {"ok": True, "standing": self._standing[rid]}
+        except Exception as e:
+            self._sport_chan[rid] = None
+            return {"ok": False, "error": str(e)}
 
     def _stand_up(self, conn):
         """Stand the dog up using recovery_stand (cmd 4) — the only command
@@ -308,13 +309,11 @@ class SSHLauncherService(ServicePlugin):
         return {"ok": True, "msg": "m3v_move closed, dog lying down"}
 
     def open_sport_channel(self, conn):
-        """Open a persistent m3v_move process on the robot. m3v_move:
-        - inits DDS once (~3s)
-        - sends recovery_stand automatically on startup
-        - reads 'vx vy yaw' lines from stdin in a loop
-        - sends Move(vx,vy,yaw) at ~sub-ms latency per command
-        This replaces the old approach of spawning a2_sport_client per command
-        (~3s DDS init each, and its Move() was hardcoded to 0,0,0.5)."""
+        """Open persistent m3v_move on robot. SAFE MODE:
+        - Does NOT auto-stand on startup (dog stays lying until user presses space)
+        - Watchdog sends 0,0,0 if no velocity command in 500ms
+        - stdin close → stop + lie + damp (safe shutdown)
+        User must explicitly send 'stand' via spacebar to make the dog stand."""
         rid = conn.cfg.robot_id
         if rid in self._sport_chan and self._sport_chan[rid] is not None:
             return True
@@ -325,12 +324,12 @@ class SSHLauncherService(ServicePlugin):
             chan.get_pty()
             chan.exec_command("/home/unitree/m3v_move eth0")
             chan.settimeout(5)
-            import time as _t; _t.sleep(4)  # DDS init + recovery_stand
+            import time as _t; _t.sleep(4)  # DDS init only (no auto-stand)
             while chan.recv_ready():
                 chan.recv(4096)
             self._sport_chan[rid] = chan
-            self._standing[rid] = True  # m3v_move auto-sends recovery_stand
-            log.info("m3v_move channel opened for %s (dog should be standing)", rid)
+            self._standing[rid] = False  # dog is NOT standing (safe mode)
+            log.info("m3v_move channel opened for %s (SAFE: dog not standing, awaiting 'stand' cmd)", rid)
             return True
         except Exception as e:
             log.warning("open_sport_channel %s failed: %s", rid, e)
