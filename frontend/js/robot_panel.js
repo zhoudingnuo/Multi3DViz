@@ -16,10 +16,14 @@ export class RobotPanel {
     this._keys = new Set();  // pressed keys for velocity computation
     this._velTimer = null;   // 10Hz velocity send interval
     this._streamMode = {};   // {robot_id: bool} — online(stream) vs batch mode per robot
+    // Restore stream mode from localStorage (persists across restarts).
+    try {
+      const saved = JSON.parse(localStorage.getItem('m3v_streamMode') || '{}');
+      this._streamMode = saved;
+    } catch (_) { this._streamMode = {}; }
     this._render();
     // Global keyboard handler (bound once, checks _takeover).
     this._onKeyDown = (e) => {
-      // Space is a one-shot toggle (stand/lie), handled separately from WASD.
       if (this._takeover && e.key === ' ' && !e.repeat) {
         e.preventDefault();
         this._handleSpace();
@@ -82,11 +86,10 @@ export class RobotPanel {
         const rid = cb.dataset.robot;
         const on = cb.checked;
         this._streamMode[rid] = on;
-        // Tell the corresponding LocalReplay instance to switch mode.
-        // The instance_id for robot_a's LocalReplay is "LocalReplay#1", etc.
-        // We send set_property to flip stream_mode + instant_load accordingly.
-        // stream ON  → stream_mode=true,  instant_load=false (live, 5min check)
-        // stream OFF → stream_mode=false, instant_load=true  (batch, full history)
+        // Persist to localStorage so it survives restarts.
+        try { localStorage.setItem('m3v_streamMode', JSON.stringify(this._streamMode)); } catch(_) {}
+        // Send to backend (works even if robot is offline — the source plugin
+        // picks up the property when it next loads data).
         this.ws.send({ type: 'set_property', name: 'LocalReplay',
                        key: 'stream_mode', value: on });
         this.ws.send({ type: 'set_property', name: 'LocalReplay',
@@ -113,7 +116,7 @@ export class RobotPanel {
        </div>
        <div class="robot-mode">
          <label class="mode-toggle" title="在线模式：只加载 5 分钟内的新数据（stream），否则回放全部历史（batch）">
-           <input type="checkbox" data-robot="${esc(r.robot_id)}" data-action="stream" ${streamOn ? 'checked' : ''} ${dis}/>
+           <input type="checkbox" data-robot="${esc(r.robot_id)}" data-action="stream" ${streamOn ? 'checked' : ''}/>
            <span>在线模式</span>
          </label>
        </div>`;

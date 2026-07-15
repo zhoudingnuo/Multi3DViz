@@ -71,6 +71,7 @@ class RobotConnection:
         self.last_error = ""
         self.last_seen = 0.0         # monotonic time of last successful ping
         self.battery_pct = -1        # battery %, -1 = unknown
+        self._shell_chan = None      # persistent shell channel for low-latency cmds
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -121,6 +122,7 @@ class RobotConnection:
         return True
 
     def _close_client(self):
+        self.close_shell()
         if self.client is not None:
             try:
                 self.client.close()
@@ -195,8 +197,64 @@ class RobotConnection:
             out = stdout.read().decode("utf-8", errors="replace")
             return rc, out
         except Exception as e:
-            # Mark the connection suspect — heartbeat will confirm/reconnect.
             return -1, f"exec failed: {e}"
+
+    # --- persistent shell channel (low-latency velocity commands) ---
+    def open_shell(self) -> bool:
+        """Open a persistent interactive shell channel for low-latency commands.
+        Used by keyboard takeover: instead of exec_command per 10Hz velocity
+        packet (each ~200ms overhead), we write one line to stdin (~5ms).
+        Returns True if the shell is open (or was already open)."""
+        with self._lock:
+            if self._shell_chan is not None and self._shell_chan.recv_ready() is not None:
+                try:
+                    self._shell_chan.send("\n")  # probe
+                    return True
+                except Exception:
+                    self._shell_chan = None
+            client = self.client
+            if client is None:
+                return False
+            try:
+                chan = client.invoke_shell()
+                chan.settimeout(2)
+                self._shell_chan = chan
+                # Drain the initial banner.
+                import time as _t; _t.sleep(0.1)
+                while chan.recv_ready():
+                    chan.recv(4096)
+                log.info("robot %s: persistent shell opened", self.cfg.robot_id)
+                return True
+            except Exception as e:
+                log.warning("robot %s: open_shell failed: %s", self.cfg.robot_id, e)
+                self._shell_chan = None
+                return False
+
+    def shell_send(self, line: str) -> bool:
+        """Send a single line to the persistent shell. Non-blocking — does NOT
+        wait for output (fire-and-forget for velocity commands). Returns False
+        if no shell is open."""
+        with self._lock:
+            chan = self._shell_chan
+        if chan is None:
+            return False
+        try:
+            chan.sendall((line + "\n").encode())
+            return True
+        except Exception:
+            with self._lock:
+                self._shell_chan = None
+            return False
+
+    def close_shell(self):
+        """Close the persistent shell channel (on takeover release / disconnect)."""
+        with self._lock:
+            if self._shell_chan is not None:
+                try:
+                    self._shell_chan.close()
+                except Exception:
+                    pass
+                self._shell_chan = None
 
     def write_file(self, remote_path: str, content: str) -> bool:
         """Write a file on the robot via `cat > path` over stdin. Best-effort."""

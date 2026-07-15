@@ -183,7 +183,7 @@ class SSHLauncherService(ServicePlugin):
         log.info("stopped pipeline on %s", rid)
         return {"ok": True}
 
-    def _go2_cmd(self, conn, cmd_id):
+    def _go2_cmd(self, conn, cmd_id, extra_args=""):
         """Send a motion command to the Go2 via DDS (unitree_sdk2 a2_sport_client).
         Direct DDS connection to the Go2 motion controller at 192.168.123.222
         via eth0 — no TCP bridge (go2_bridge_ros2.py) needed.
@@ -191,11 +191,11 @@ class SSHLauncherService(ServicePlugin):
         cmd_id maps to a2_sport_client's menu:
           0=damp(急停阻尼) 1=balance_stand 2=stop_move 3=stand_down(趴下)
           4=recovery_stand 5=move(vx,vy,yaw) 11=stand_up(站立)
+        extra_args: for cmd 5 (move), pass "vx vy yaw" as space-separated floats.
         Returns True if the command was accepted (code 0)."""
         rid = conn.cfg.robot_id
-        # Run a2_sport_client interactively: pipe the cmd_id into stdin, capture stdout.
-        # timeout 5 kills it if it hangs (e.g. motion controller unreachable).
-        ssh_cmd = f"echo '{cmd_id}' | timeout 5 /home/unitree/unitree_sdk2-main/build/bin/a2_sport_client eth0 2>&1"
+        args = f"eth0 {extra_args}".strip() if extra_args else "eth0"
+        ssh_cmd = f"echo '{cmd_id}' | timeout 5 /home/unitree/unitree_sdk2-main/build/bin/a2_sport_client {args} 2>&1"
         rc, out = conn.run(ssh_cmd, timeout=8)
         ok = "Request successed" in out or "code: 0" in out
         log.info("go2_cmd %s id=%d: %s (%s)", rid, cmd_id, "OK" if ok else "FAIL", out[-80:])
@@ -224,9 +224,10 @@ class SSHLauncherService(ServicePlugin):
         down). The zero-vel ensures the dog isn't mid-stride when damp hits."""
         rid = conn.cfg.robot_id
         log.warning("ESTOP on %s: zero_vel + stop_move + damp", rid)
-        self._send_vel(conn, {"vx": 0, "vy": 0, "yaw": 0})  # zero velocity first
+        self._send_vel(conn, {"vx": 0, "vy": 0, "yaw": 0})
         self._go2_cmd(conn, 2)   # stop_move
         self._go2_cmd(conn, 0)   # damp — motors to damping, dog lies down safely
+        self._standing[rid] = False
         return {"ok": True}
 
     def _toggle_pose(self, conn):
@@ -262,14 +263,21 @@ class SSHLauncherService(ServicePlugin):
         return {"ok": ok}
 
     def _send_vel(self, conn, value):
-        """Send a one-shot velocity command {vx, vy, yaw} to the Go2 TCP bridge
-        (api 1008 MOVE). Used for keyboard takeover (WASD) at ~10Hz."""
+        """Send a velocity command {vx, vy, yaw} to the Go2. Uses the persistent
+        shell channel during takeover for low latency (~5ms per command instead
+        of ~200ms for exec_command). Falls back to exec if no shell is open."""
         if not isinstance(value, dict):
             return {"ok": False, "error": "vel value must be {vx,vy,yaw}"}
         vx = float(value.get("vx", 0))
         vy = float(value.get("vy", 0))
         yaw = float(value.get("yaw", 0))
-        ok = self._tcp_bridge_cmd(conn, 1008, {"x": vx, "y": vy, "z": yaw})
+        # Try persistent shell first (low-latency path for 10Hz takeover).
+        if conn.shell_send(
+                f"echo '5' | timeout 2 /home/unitree/unitree_sdk2-main/build/bin/a2_sport_client eth0 "
+                f"{vx} {vy} {yaw} >/dev/null 2>&1"):
+            return {"ok": True}
+        # Fallback: full exec_command (slower, for one-off commands).
+        ok = self._go2_cmd(conn, 5, extra_args=f"{vx} {vy} {yaw}")
         return {"ok": ok}
 
     # --- per-tick: auto-launch on online transition ---
