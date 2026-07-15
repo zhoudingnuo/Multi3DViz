@@ -237,7 +237,19 @@ export class RobotPanel {
             return;
           }
           // Poll backend every 500ms to check if channel is ready.
+          // Timeout after ~20s — if the robot-side process crashes at startup
+          // (e.g. m3v_agibot.py SyntaxError, SDK can't init), bail out so the
+          // user sees an error instead of an infinite spinner.
+          const startedAt = Date.now();
           const poll = () => {
+            if (this._takeoverLoading !== rid) return;  // cancelled
+            if (Date.now() - startedAt > 20000) {
+              if (window.dbg) window.dbg(`takeover ${rid} TIMEOUT — channel never came up (check robot-side script)`, 'err');
+              this._takeover = null;
+              this._takeoverLoading = null;
+              this._renderList();
+              return;
+            }
             this.ws.request({ type: 'robot_command', robot_id: rid, action: 'channel_status' })
               .then(sr => {
                 if (sr && sr.ready) {

@@ -102,7 +102,7 @@ class SSHLauncherService(ServicePlugin):
             return self._takeover_end(conn)
         if action == "channel_status":
             rid2 = conn.cfg.robot_id
-            return {"ok": True, "ready": self._sport_chan.get(rid2) is not None}
+            return {"ok": True, "ready": self._channel_alive(rid2)}
         if action == "stand_up":
             return self._stand_up(conn)
         if action == "lie_down":
@@ -256,9 +256,9 @@ class SSHLauncherService(ServicePlugin):
         Writes 'stand' or 'lie' to stdin — m3v_move handles the DDS calls."""
         rid = conn.cfg.robot_id
         standing = self._standing.get(rid, False)
-        chan = self._sport_chan.get(rid)
-        if chan is None:
+        if not self._channel_alive(rid):
             return {"ok": False, "error": "no sport channel open"}
+        chan = self._sport_chan.get(rid)
         cmd = "lie" if standing else "stand"
         try:
             chan.sendall((cmd + "\n").encode())
@@ -297,7 +297,10 @@ class SSHLauncherService(ServicePlugin):
         yaw = float(value.get("yaw", 0))
         rid = conn.cfg.robot_id
         # Fast path: persistent m3v_move channel (opened at takeover start).
-        chan = self._sport_chan.get(rid)
+        # Use _channel_alive instead of a raw None check so we don't keep
+        # sendall-ing into a dead channel (the remote process may have
+        # crashed silently — exit_status_ready tells us).
+        chan = self._sport_chan.get(rid) if self._channel_alive(rid) else None
         if chan is not None:
             try:
                 chan.sendall(f"{vx} {vy} {yaw}\n".encode())
@@ -365,6 +368,23 @@ class SSHLauncherService(ServicePlugin):
             import time as _t; _t.sleep(init_wait)
             while chan.recv_ready():
                 chan.recv(4096)
+            # After the init wait, confirm the process is still running. If
+            # it died during init (e.g. m3v_agibot.py crashed with a
+            # SyntaxError, or the SDK couldn't connect), report failure so the
+            # takeover UI shows an error instead of "ready".
+            if chan.exit_status_ready():
+                code = chan.recv_exit_status()
+                tail = ""
+                try:
+                    while chan.recv_ready():
+                        tail += chan.recv(4096).decode("utf-8", "replace")
+                except Exception:
+                    pass
+                log.warning("open_sport_channel %s: process exited early "
+                            "(code=%d) cmd=%s tail=%s",
+                            rid, code, cmd, tail[-300:])
+                self._sport_chan[rid] = None
+                return False
             self._sport_chan[rid] = chan
             self._standing[rid] = False  # safe mode: not standing
             log.info("sport channel opened for %s via: %s", rid, cmd)
@@ -385,6 +405,26 @@ class SSHLauncherService(ServicePlugin):
                 pass
             log.info("sport channel closed for %s", rid)
 
+    def _channel_alive(self, rid):
+        """True if the sport channel is open AND the remote process hasn't
+        exited. The dict can still hold a Channel whose underlying process died
+        (e.g. m3v_agibot.py crashed at startup) — checking exit_status_ready +
+        recv_exit_status distinguishes a live channel from a zombie one."""
+        chan = self._sport_chan.get(rid)
+        if chan is None:
+            return False
+        try:
+            # exit_status_ready is True only when the remote process has ended.
+            if getattr(chan, "exit_status_ready", lambda: False)():
+                code = chan.recv_exit_status()
+                log.warning("sport channel for %s died (exit=%d)", rid, code)
+                self._sport_chan[rid] = None
+                return False
+            return True
+        except Exception:
+            self._sport_chan[rid] = None
+            return False
+
     # --- per-tick: auto-launch on online transition ---
     def update(self, dt):
         if not self.get("auto_launch", False):
@@ -396,3 +436,4 @@ class SSHLauncherService(ServicePlugin):
                 res = self._launch(conn)
                 if not res.get("ok"):
                     log.warning("auto-launch %s failed: %s", rid, res.get("error"))
+        return None
