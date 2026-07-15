@@ -303,9 +303,16 @@ class SSHLauncherService(ServicePlugin):
                 chan.sendall(f"{vx} {vy} {yaw}\n".encode())
                 return {"ok": True}
             except Exception:
-                self._sport_chan[rid] = None
-        # Fallback: one-shot exec (slow).
-        cmd = (f"echo '{vx} {vy} {yaw}' | timeout 3 /home/unitree/m3v_move eth0 2>&1")
+                # DON'T clear the channel on send failure — the channel may
+                # just be temporarily not writable (PTY buffer full, init in
+                # progress). Clearing it here causes toggle_pose to fail with
+                # "no sport channel open" on the next key press.
+                return {"ok": False, "error": "send failed (channel still open)"}
+        # Fallback: one-shot exec (slow). Pick the right binary per robot.
+        if rid.endswith('b') or rid.endswith('B'):
+            cmd = f"echo '{vx} {vy} {yaw}' | timeout 3 python3 /home/orin-001/m3v_agibot.py 2>&1"
+        else:
+            cmd = f"echo '{vx} {vy} {yaw}' | timeout 3 /home/unitree/m3v_move eth0 2>&1"
         rc, out = conn.run(cmd, timeout=5)
         return {"ok": rc == 0}
 
