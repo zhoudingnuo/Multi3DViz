@@ -202,18 +202,31 @@ export class RobotPanel {
   _toggleTakeover(rid) {
     if (window.dbg) window.dbg(`takeover toggle: ${rid} (currently ${this._takeover || 'none'})`, 'warn');
     if (this._takeover === rid) {
-      // Release: send a zero velocity + stop the timer.
+      // Release: tell backend to close m3v_move (dog lies down).
       this._takeover = null;
       this._keys.clear();
       if (this._velTimer) { clearInterval(this._velTimer); this._velTimer = null; }
-      this.ws.send({ type: 'robot_vel', robot_id: rid, vx: 0, vy: 0, yaw: 0 });
+      this.ws.request({ type: 'robot_command', robot_id: rid, action: 'takeover_end' })
+        .then(r => { if (window.dbg) window.dbg(`takeover_end: ${JSON.stringify(r)}`, r.ok ? 'ok' : 'err'); });
     } else {
-      // Take over: start the 10Hz velocity sender.
+      // Take over: tell backend to open m3v_move (dog stands up), then start vel sender.
       this._takeover = rid;
       this._keys.clear();
+      this.ws.request({ type: 'robot_command', robot_id: rid, action: 'takeover_start' })
+        .then(r => {
+          if (window.dbg) window.dbg(`takeover_start: ${JSON.stringify(r)}`, r.ok ? 'ok' : 'err');
+          if (r && r.ok && this._velTimer) clearInterval(this._velTimer);
+          if (r && r.ok) {
+            this._velTimer = setInterval(() => this._sendVel(), 100); // 10Hz
+            if (window.dbg) window.dbg(`takeover STARTED for ${rid} — m3v_move ready, WASD/QE=move`, 'ok');
+          } else {
+            if (window.dbg) window.dbg(`takeover FAILED — m3v_move not started`, 'err');
+            this._takeover = null;
+          }
+        });
+      // Start timer optimistically (will be cleared if start fails).
       if (this._velTimer) clearInterval(this._velTimer);
-      this._velTimer = setInterval(() => this._sendVel(), 100); // 10Hz
-      if (window.dbg) window.dbg(`takeover STARTED for ${rid} — WASD/QE=move, space=stand/lie, keys active`, 'ok');
+      this._velTimer = setInterval(() => this._sendVel(), 100);
     }
     this._renderList();
   }
@@ -248,11 +261,23 @@ export class RobotPanel {
     if (k.has('d')) vy -= SIDE;
     if (k.has('q')) yaw += TURN;
     if (k.has('e')) yaw -= TURN;
-    // Log velocity every ~1s (not every 100ms — too spammy).
-    this._velLogT = (this._velLogT || 0) + 1;
-    if (window.dbg && this._velLogT % 10 === 0)
-      window.dbg(`vel ${this._takeover}: vx=${vx.toFixed(2)} vy=${vy.toFixed(2)} yaw=${yaw.toFixed(2)}`, 'send');
+    // ALWAYS send — including zeros. If we skip zeros the dog keeps the last
+    // velocity (e.g. yaw != 0 → spins forever). The wasMoving flag just
+    // reduces debug log spam for repeated zeros.
     this.ws.send({ type: 'robot_vel', robot_id: this._takeover, vx, vy, yaw });
+    // Log non-zero at 1Hz, zero only on transition.
+    const isZero = (vx === 0 && vy === 0 && yaw === 0);
+    if (isZero) {
+      if (this._wasMoving) {
+        this._wasMoving = false;
+        if (window.dbg) window.dbg(`vel ${this._takeover}: STOP (0,0,0 sent)`, 'warn');
+      }
+    } else {
+      this._wasMoving = true;
+      this._velLogT = (this._velLogT || 0) + 1;
+      if (window.dbg && this._velLogT % 10 === 0)
+        window.dbg(`vel ${this._takeover}: vx=${vx.toFixed(2)} vy=${vy.toFixed(2)} yaw=${yaw.toFixed(2)}`, 'send');
+    }
   }
 
   _toast(r) {

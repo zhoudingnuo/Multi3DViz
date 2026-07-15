@@ -322,16 +322,20 @@ class Backend:
         elif mtype == "robot_list":
             await ws.send(proto.make_response(rid, robots=self.robots.list_state()))
         elif mtype == "robot_command":
-            # SSH command on a robot: action launch|stop|restart|estop|vel|run.
+            # SSH command on a robot: action launch|stop|estop|toggle_pose|vel|run.
+            # Run in executor — SSH calls can take seconds (DDS init, timeout)
+            # and would block the asyncio loop if called inline.
             inst = self.registry.get("SSHLauncher")
             if inst is None:
-                # Try enabling it on demand so the UI works even if it was off.
                 self.registry.enable("SSHLauncher")
                 inst = self.registry.get("SSHLauncher")
-            result = {"ok": False, "error": "SSHLauncher not available"}
+            loop = asyncio.get_event_loop()
             if inst is not None:
-                result = inst.command(msg.get("robot_id"), msg.get("action"),
-                                      msg.get("value"))
+                result = await loop.run_in_executor(
+                    None, inst.command, msg.get("robot_id"),
+                    msg.get("action"), msg.get("value"))
+            else:
+                result = {"ok": False, "error": "SSHLauncher not available"}
             await ws.send(proto.make_response(rid, **result))
         elif mtype == "robot_vel":
             # Keyboard takeover velocity: {robot_id, vx, vy, yaw}. Fire-and-forget

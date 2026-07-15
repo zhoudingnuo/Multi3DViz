@@ -67,6 +67,7 @@ class SSHLauncherService(ServicePlugin):
         # re-launch unless the user explicitly stops+launches again).
         self._launched = set()
         self._standing = {}   # robot_id → bool (tracks stand/lie state for toggle)
+        self._sport_chan = {} # robot_id → paramiko.Channel (persistent a2_sport_client)
 
     def on_enable(self):
         log.info("SSHLauncher ready")
@@ -95,6 +96,10 @@ class SSHLauncherService(ServicePlugin):
             return self._estop(conn)
         if action == "toggle_pose":
             return self._toggle_pose(conn)
+        if action == "takeover_start":
+            return self._takeover_start(conn)
+        if action == "takeover_end":
+            return self._takeover_end(conn)
         if action == "stand_up":
             return self._stand_up(conn)
         if action == "lie_down":
@@ -265,27 +270,83 @@ class SSHLauncherService(ServicePlugin):
         return {"ok": ok}
 
     def _send_vel(self, conn, value):
-        """Send a velocity command {vx, vy, yaw} to the Go2 via DDS.
-        Uses a2_sport_client cmd 5 (move). Each call is a fresh exec (the
-        a2_sport_client binary is lightweight enough for ~2Hz sustained).
-        For 10Hz takeover, the persistent shell amortizes SSH overhead."""
+        """Send velocity to Go2 via the persistent m3v_move process.
+        Writes 'vx vy yaw\\n' to its stdin — sub-millisecond (no DDS re-init).
+        Falls back to one-shot SSH exec if no channel is open."""
         if not isinstance(value, dict):
             return {"ok": False, "error": "vel value must be {vx,vy,yaw}"}
         vx = float(value.get("vx", 0))
         vy = float(value.get("vy", 0))
         yaw = float(value.get("yaw", 0))
         rid = conn.cfg.robot_id
-        # Build the move command. a2_sport_client reads cmd_id from stdin,
-        # then extra args (vx vy yaw) from command line.
-        cmd = (f"echo '5' | timeout 1 /home/unitree/unitree_sdk2-main/build/bin/"
-               f"a2_sport_client eth0 {vx} {vy} {yaw} 2>&1 | grep -c 'successed'")
-        # Try persistent shell first (low-latency).
-        if conn.shell_send(cmd):
-            return {"ok": True}
-        # Fallback: full exec.
-        rc, out = conn.run(cmd, timeout=3)
-        ok = "successed" in out or rc == 0
-        return {"ok": ok}
+        # Fast path: persistent m3v_move channel (opened at takeover start).
+        chan = self._sport_chan.get(rid)
+        if chan is not None:
+            try:
+                chan.sendall(f"{vx} {vy} {yaw}\n".encode())
+                return {"ok": True}
+            except Exception:
+                self._sport_chan[rid] = None
+        # Fallback: one-shot exec (slow).
+        cmd = (f"echo '{vx} {vy} {yaw}' | timeout 3 /home/unitree/m3v_move eth0 2>&1")
+        rc, out = conn.run(cmd, timeout=5)
+        return {"ok": rc == 0}
+
+    def _takeover_start(self, conn):
+        """Called when user enters keyboard takeover mode. Opens the persistent
+        m3v_move channel so velocity commands are sub-ms latency. The m3v_move
+        process auto-sends recovery_stand on startup (dog stands up)."""
+        rid = conn.cfg.robot_id
+        ok = self.open_sport_channel(conn)
+        return {"ok": ok, "msg": "m3v_move started, dog standing" if ok else "failed"}
+
+    def _takeover_end(self, conn):
+        """Called when user exits takeover mode. Closes the m3v_move channel
+        (which sends stand_down on stdin close → dog lies down)."""
+        rid = conn.cfg.robot_id
+        self.close_sport_channel(rid)
+        return {"ok": True, "msg": "m3v_move closed, dog lying down"}
+
+    def open_sport_channel(self, conn):
+        """Open a persistent m3v_move process on the robot. m3v_move:
+        - inits DDS once (~3s)
+        - sends recovery_stand automatically on startup
+        - reads 'vx vy yaw' lines from stdin in a loop
+        - sends Move(vx,vy,yaw) at ~sub-ms latency per command
+        This replaces the old approach of spawning a2_sport_client per command
+        (~3s DDS init each, and its Move() was hardcoded to 0,0,0.5)."""
+        rid = conn.cfg.robot_id
+        if rid in self._sport_chan and self._sport_chan[rid] is not None:
+            return True
+        if conn.client is None:
+            return False
+        try:
+            chan = conn.client.get_transport().open_session()
+            chan.get_pty()
+            chan.exec_command("/home/unitree/m3v_move eth0")
+            chan.settimeout(5)
+            import time as _t; _t.sleep(4)  # DDS init + recovery_stand
+            while chan.recv_ready():
+                chan.recv(4096)
+            self._sport_chan[rid] = chan
+            self._standing[rid] = True  # m3v_move auto-sends recovery_stand
+            log.info("m3v_move channel opened for %s (dog should be standing)", rid)
+            return True
+        except Exception as e:
+            log.warning("open_sport_channel %s failed: %s", rid, e)
+            self._sport_chan[rid] = None
+            return False
+
+    def close_sport_channel(self, rid):
+        """Close the persistent sport client (on takeover release)."""
+        chan = self._sport_chan.pop(rid, None)
+        if chan is not None:
+            try:
+                chan.sendall(b"3\n")  # stand_down (lie down safely)
+                chan.close()
+            except Exception:
+                pass
+            log.info("sport channel closed for %s", rid)
 
     # --- per-tick: auto-launch on online transition ---
     def update(self, dt):
