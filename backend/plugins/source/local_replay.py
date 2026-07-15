@@ -387,18 +387,17 @@ class LocalReplaySource(DataSourcePlugin):
         if self._loaded_root is None:
             return None
         # FRESHNESS CHECK: if the latest .npy in this run dir is older than 5
-        # minutes, the robot stopped recording. Don't sit in stream mode polling
-        # forever — switch to batch/instant_load so the user sees the data.
+        # FRESHNESS CHECK: if the latest .npy is > 5 min old, the robot is
+        # NOT actively recording. Stay in stream mode but don't load stale
+        # history — just wait for new data. Do NOT auto-switch to batch (that
+        # would override the user's explicit choice and load history).
         cloud_dir = os.path.join(self._loaded_root, "cloud_registered")
         npys = sorted(glob.glob(os.path.join(cloud_dir, "*.npy")))
         if npys:
             age = time.time() - os.path.getmtime(npys[-1])
-            if age > 300:  # 5 minutes
-                log.info("stream: latest frame %.0fs old (>5min) — falling back to batch", age)
-                self.set("stream_mode", False)
-                self.set("instant_load", True)
-                self._reload()
-                return None
+            if age > 300:  # 5 minutes — stale
+                log.info("stream: latest frame %.0fs old — staying in stream, waiting for new data", age)
+                return None  # don't load, just wait
         # Ensure stream accumulators exist (may be None if a batch _reload
         # raced and reset them).
         if self._frames is None:
