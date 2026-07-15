@@ -351,6 +351,7 @@ html, body {
 .ssh-btn.takeover.loading {
   color: var(--text-muted); border-color: var(--border);
   animation: pulse 1s infinite;
+  min-width: 32px; overflow: hidden; text-overflow: clip; white-space: nowrap;
 }
 @keyframes pulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; } }
 /* Emergency stop button — red, bold */

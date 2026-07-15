@@ -170,7 +170,10 @@ class LocalReplaySource(DataSourcePlugin):
             self._last_pushed = 0
             self._cached_pub_frame = -1
             self._cached_pub_pts = None
-            log.info("mode switch: %s=%s → state reset, will reload next tick", key, value)
+            # Cancel any in-progress batch load — the background thread checks
+            # this flag and bails out if the mode switched mid-load.
+            self._loading = False
+            log.info("mode switch: %s=%s → full state reset, batch load cancelled", key, value)
         # Re-load only when data-source identity changes.
         if key in ("data_root", "robot"):
             if self.get("stream_mode", False):

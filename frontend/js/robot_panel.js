@@ -131,7 +131,7 @@ export class RobotPanel {
     if (isTakeover && !isTakeoverLoading) {
       takeoverBtn = `<button class="ssh-btn takeover active" data-robot="${esc(r.robot_id)}" data-action="takeover">◉ 接管中</button>`;
     } else if (isTakeoverLoading) {
-      takeoverBtn = `<button class="ssh-btn takeover loading" disabled>⏳ 连接中...</button>`;
+      takeoverBtn = `<button class="ssh-btn takeover loading" disabled>⏳</button>`;
     } else {
       takeoverBtn = `<button class="ssh-btn takeover" data-robot="${esc(r.robot_id)}" data-action="takeover" ${dis} title="接管后用 WASD 键盘控制">⌨ 接管</button>`;
     }
