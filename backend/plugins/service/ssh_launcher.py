@@ -231,26 +231,28 @@ class SSHLauncherService(ServicePlugin):
         return {"ok": True}
 
     def _toggle_pose(self, conn):
-        """Toggle between standing and lying down. Tracks the current pose
-        per-robot (the bridge doesn't expose mode reliably). Used by the
-        spacebar during keyboard takeover."""
+        """Toggle between standing and lying down via spacebar.
+        Uses recovery_stand (cmd 4) to stand up — this is the ONLY command
+        that works from PASSIVE (lying/damp) mode. stand_up (cmd 11) fails
+        when the dog is PASSIVE. Uses stand_down (cmd 3) to lie down."""
         rid = conn.cfg.robot_id
         standing = self._standing.get(rid, False)
         if standing:
-            log.info("TOGGLE_POSE on %s: standing → lying", rid)
-            ok = self._go2_cmd(conn, 3)   # stand_down (lie down)
+            log.info("TOGGLE_POSE %s: standing → lying (cmd 3)", rid)
+            ok = self._go2_cmd(conn, 3)   # stand_down
             self._standing[rid] = False
         else:
-            log.info("TOGGLE_POSE on %s: lying → standing", rid)
-            ok = self._go2_cmd(conn, 11)  # stand_up
+            log.info("TOGGLE_POSE %s: lying → standing (cmd 4 recovery_stand)", rid)
+            ok = self._go2_cmd(conn, 4)   # recovery_stand — works from PASSIVE
             self._standing[rid] = True
         return {"ok": ok, "standing": self._standing[rid]}
 
     def _stand_up(self, conn):
-        """Stand the dog up (cmd 11 = stand_up)."""
+        """Stand the dog up using recovery_stand (cmd 4) — the only command
+        that works from PASSIVE mode. cmd 11 (stand_up) fails when PASSIVE."""
         rid = conn.cfg.robot_id
-        log.info("STANDUP on %s", rid)
-        ok = self._go2_cmd(conn, 11)
+        log.info("STANDUP on %s (recovery_stand)", rid)
+        ok = self._go2_cmd(conn, 4)   # recovery_stand — works from PASSIVE
         self._standing[rid] = True
         return {"ok": ok}
 
@@ -263,21 +265,26 @@ class SSHLauncherService(ServicePlugin):
         return {"ok": ok}
 
     def _send_vel(self, conn, value):
-        """Send a velocity command {vx, vy, yaw} to the Go2. Uses the persistent
-        shell channel during takeover for low latency (~5ms per command instead
-        of ~200ms for exec_command). Falls back to exec if no shell is open."""
+        """Send a velocity command {vx, vy, yaw} to the Go2 via DDS.
+        Uses a2_sport_client cmd 5 (move). Each call is a fresh exec (the
+        a2_sport_client binary is lightweight enough for ~2Hz sustained).
+        For 10Hz takeover, the persistent shell amortizes SSH overhead."""
         if not isinstance(value, dict):
             return {"ok": False, "error": "vel value must be {vx,vy,yaw}"}
         vx = float(value.get("vx", 0))
         vy = float(value.get("vy", 0))
         yaw = float(value.get("yaw", 0))
-        # Try persistent shell first (low-latency path for 10Hz takeover).
-        if conn.shell_send(
-                f"echo '5' | timeout 2 /home/unitree/unitree_sdk2-main/build/bin/a2_sport_client eth0 "
-                f"{vx} {vy} {yaw} >/dev/null 2>&1"):
+        rid = conn.cfg.robot_id
+        # Build the move command. a2_sport_client reads cmd_id from stdin,
+        # then extra args (vx vy yaw) from command line.
+        cmd = (f"echo '5' | timeout 1 /home/unitree/unitree_sdk2-main/build/bin/"
+               f"a2_sport_client eth0 {vx} {vy} {yaw} 2>&1 | grep -c 'successed'")
+        # Try persistent shell first (low-latency).
+        if conn.shell_send(cmd):
             return {"ok": True}
-        # Fallback: full exec_command (slower, for one-off commands).
-        ok = self._go2_cmd(conn, 5, extra_args=f"{vx} {vy} {yaw}")
+        # Fallback: full exec.
+        rc, out = conn.run(cmd, timeout=3)
+        ok = "successed" in out or rc == 0
         return {"ok": ok}
 
     # --- per-tick: auto-launch on online transition ---
