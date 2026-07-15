@@ -124,11 +124,11 @@ DEFAULT_ROBOTS = [
     {"robot_id": "robot_a", "host": "10.60.77.187", "port": 22,
      "user": "unitree", "password": "123",
      "label": "Unitree Go2",
-     "data_path": "", "launch_cmd": ""},
+     "data_path": "", "launch_cmd": "/home/unitree/sda2/restart_all.sh"},
     {"robot_id": "robot_b", "host": "10.60.77.154", "port": 22,
      "user": "orin-001", "password": None,
      "label": "Agibot D1",
-     "data_path": "", "launch_cmd": ""},
+     "data_path": "", "launch_cmd": "/home/orin-001/sda2/restart_all.sh"},
 ]
 
 
@@ -171,6 +171,8 @@ class Backend:
         self._reg_t = 0.0
         # process-stats broadcast accumulator (every ~1s)
         self._stat_t = 0.0
+        # battery query accumulator (every ~30s — SSH query is slow)
+        self._batt_t = 0.0
 
     # --- connection lifecycle ---
     async def serve(self, websocket):
@@ -663,6 +665,32 @@ class Backend:
                 # the active plugins — mirrors ccenter's ui_info panel.
                 await self._outbox.put(proto.make_msg("info_state",
                                                       **self._info_state()))
+            # Periodic battery query — every 30s, SSH to each online robot.
+            # Runs in executor so the slow SSH call doesn't stall the tick loop.
+            self._batt_t += dt
+            if self._batt_t >= 30.0 and self.robots is not None:
+                self._batt_t = 0.0
+                loop = asyncio.get_event_loop()
+                loop.run_in_executor(None, self._query_batteries)
+
+    def _query_batteries(self):
+        """Query battery % for all online robots via SSH. Runs in executor."""
+        inst = self.registry.get("SSHLauncher")
+        if inst is None:
+            return
+        for rid, conn in self.robots.all().items():
+            if conn.state != "online":
+                continue
+            try:
+                result = inst.command(rid, "battery")
+                pct = result.get("pct", -1)
+                conn.battery_pct = pct
+            except Exception:
+                pass
+        # Push updated robot_status with battery levels.
+        if self._outbox is not None and self.client is not None:
+            self._loop.call_soon_threadsafe(lambda: self._outbox.put_nowait(
+                proto.make_msg("robot_status", robots=self.robots.list_state())))
 
     @staticmethod
     def _merge_updates(updates: list[SceneUpdate]) -> SceneUpdate:

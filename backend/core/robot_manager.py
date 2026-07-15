@@ -70,6 +70,7 @@ class RobotConnection:
         self.client = None           # paramiko.SSHClient | None
         self.last_error = ""
         self.last_seen = 0.0         # monotonic time of last successful ping
+        self.battery_pct = -1        # battery %, -1 = unknown
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -261,6 +262,7 @@ class RobotManager:
                     "state": c.state,
                     "error": c.last_error,
                     "last_seen": round(c.last_seen, 1),
+                    "battery_pct": c.battery_pct,
                 }
                 for c in self._robots.values()
             ]

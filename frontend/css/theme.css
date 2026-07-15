@@ -302,6 +302,10 @@ html, body {
 .robot-info { flex: 1; min-width: 0; }
 .robot-name { font-weight: 600; font-size: 12px; }
 .robot-id { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); font-weight: 400; }
+.battery { font-size: 10px; font-family: var(--font-mono); padding: 0 4px; border-radius: 8px; margin-left: 4px; }
+.battery.bat-ok { color: var(--status-ok); background: rgba(78,201,176,0.1); }
+.battery.bat-warn { color: var(--status-warn); background: rgba(220,220,170,0.1); }
+.battery.bat-err { color: var(--status-err); background: rgba(244,135,113,0.1); }
 .robot-host { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .robot-err { color: var(--status-err); }
 /* SSH / FAST-LIO controls */

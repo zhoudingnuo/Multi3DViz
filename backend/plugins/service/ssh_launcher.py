@@ -42,10 +42,22 @@ class SSHLauncherService(ServicePlugin):
             "group": "Behavior",
         },
         "launch_prefix": {
-            "type": "string", "default": "cd ~/fast_lio && source devel/setup.bash &&",
+            "type": "string", "default": "",
             "label": "Prefix prepended to launch_cmd (workspace setup)",
             "group": "Behavior",
         },
+    }
+
+    # Per-robot pipeline scripts (SSH-orchestrated, no agent needed on robot).
+    # These match the verified scripts on the Unitree Go2. Override launch_cmd
+    # per-robot from the UI for other platforms.
+    PIPELINE_SCRIPTS = {
+        "robot_a": "/home/unitree/sda2/restart_all.sh",     # FAST-LIO + record + bridge
+        "robot_b": "/home/orin-001/sda2/restart_all.sh",     # Agibot equivalent (if exists)
+    }
+    EXPLORER_SCRIPTS = {
+        "robot_a": "/home/unitree/sda2/run_go2_search.sh",
+        "robot_b": "/home/orin-001/sda2/run_go2_search.sh",
     }
 
     def __init__(self, ctx):
@@ -84,31 +96,83 @@ class SSHLauncherService(ServicePlugin):
         if action == "run":
             rc, out = conn.run(str(value or ""))
             return {"ok": rc == 0, "rc": rc, "output": out[-2000:]}
+        if action == "battery":
+            return self._query_battery(conn)
+        if action == "launch_explorer":
+            return self._launch_explorer(conn)
         return {"ok": False, "error": f"unknown action {action}"}
 
-    def _launch(self, conn):
-        cmd = conn.cfg.launch_cmd
-        if not cmd:
-            return {"ok": False, "error": "no launch_cmd configured for this robot"}
-        prefix = self.get("launch_prefix", "")
-        # nohup + & so SLAM keeps running after the channel closes; redirect
-        # output to a log the user can tail.
-        full = f"nohup bash -lc {shlex.quote(prefix + ' ' + cmd)} > /tmp/m3v_slam.log 2>&1 &"
+    def _query_battery(self, conn):
+        """Query robot battery level via SSH. Returns {ok, pct, raw}."""
+        import re as _re
+        rid = conn.cfg.robot_id
+        # Unitree Go2: battery_status_bar outputs "🔋 XX%".
+        # Agibot: grep Bms power from dog_task.log.
+        cmds = [
+            # Unitree battery_status_bar (fast, ~2s)
+            "timeout 5 /home/unitree/unitree_sdk2-main/build/bin/battery_status_bar eth0 -1 2>&1 | head -3",
+            # Agibot Bms power from log
+            "grep 'Bms power' /userdata/log/dog_task.log 2>/dev/null | tail -1",
+        ]
+        for cmd in cmds:
+            rc, out = conn.run(cmd, timeout=8)
+            if rc != 0 and not out:
+                continue
+            # Extract percentage.
+            m = _re.search(r'(\d+)\s*%', out)
+            if m:
+                pct = int(m.group(1))
+                log.info("battery %s: %d%%", rid, pct)
+                return {"ok": True, "pct": pct, "raw": out.strip()[-100:]}
+        return {"ok": False, "pct": -1, "raw": out.strip()[-100:] if out else ""}
+
+    def _launch_explorer(self, conn):
+        """Launch the frontier exploration script (go2_search) via SSH."""
+        rid = conn.cfg.robot_id
+        script = self.EXPLORER_SCRIPTS.get(rid, "")
+        if not script:
+            return {"ok": False, "error": "no explorer script for this robot"}
+        full = f"nohup bash -lc {shlex.quote(script)} > /tmp/m3v_explore.log 2>&1 &"
         rc, out = conn.run(full, timeout=15)
         if rc == 0:
-            self._launched.add(conn.cfg.robot_id)
-            log.info("launched SLAM on %s: %s", conn.cfg.robot_id, cmd)
+            log.info("launched explorer on %s: %s", rid, script)
             return {"ok": True}
-        return {"ok": False, "rc": rc, "output": out}
+        return {"ok": False, "rc": rc, "output": out[-500:]}
+
+    def _launch(self, conn):
+        """Launch the robot's full SLAM pipeline (FAST-LIO + record + bridge)
+        via SSH. Uses launch_cmd if set, otherwise falls back to the known
+        pipeline script for this robot_id."""
+        rid = conn.cfg.robot_id
+        cmd = conn.cfg.launch_cmd or self.PIPELINE_SCRIPTS.get(rid, "")
+        if not cmd:
+            return {"ok": False, "error": "no launch_cmd or pipeline script for this robot"}
+        prefix = self.get("launch_prefix", "")
+        full_cmd = f"{prefix} {cmd}".strip() if prefix else cmd
+        # nohup + & so the pipeline keeps running after the SSH channel closes.
+        full = f"nohup bash -lc {shlex.quote(full_cmd)} > /tmp/m3v_pipeline.log 2>&1 &"
+        rc, out = conn.run(full, timeout=20)
+        if rc == 0:
+            self._launched.add(rid)
+            log.info("launched pipeline on %s: %s", rid, full_cmd)
+            return {"ok": True}
+        return {"ok": False, "rc": rc, "output": out[-500:]}
 
     def _stop(self, conn):
-        # Kill by the launch_cmd's first token (best-effort). A real deploy
-        # would use a pidfile or systemd unit; this is the pragmatic Phase-3 form.
-        cmd = conn.cfg.launch_cmd.split()[0] if conn.cfg.launch_cmd else ""
-        if cmd:
-            conn.run(f"pkill -f {shlex.quote(cmd)}", timeout=8)
-        self._launched.discard(conn.cfg.robot_id)
-        log.info("stopped SLAM on %s", conn.cfg.robot_id)
+        """Stop the robot's SLAM pipeline. Uses the cleanup script if known
+        (kills all ROS/livox/fastlio processes), otherwise falls back to pkill."""
+        rid = conn.cfg.robot_id
+        cleanup = {"robot_a": "/home/unitree/sda2/cleanup_ros.sh",
+                   "robot_b": "/home/orin-001/sda2/cleanup_ros.sh"}.get(rid, "")
+        if cleanup:
+            conn.run(f"bash {cleanup}", timeout=10)
+        else:
+            # Fallback: kill by launch_cmd's first token.
+            cmd = conn.cfg.launch_cmd.split()[0] if conn.cfg.launch_cmd else ""
+            if cmd:
+                conn.run(f"pkill -f {shlex.quote(cmd)}", timeout=8)
+        self._launched.discard(rid)
+        log.info("stopped pipeline on %s", rid)
         return {"ok": True}
 
     def _estop(self, conn):

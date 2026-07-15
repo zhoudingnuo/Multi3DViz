@@ -56,7 +56,7 @@ export class RobotPanel {
         if (act === 'remove') {
           if (!confirm(`Remove robot ${rid}?`)) return;
           this.ws.request({ type: 'robot_remove', robot_id: rid });
-        } else if (act === 'launch' || act === 'stop') {
+        } else if (act === 'launch' || act === 'stop' || act === 'launch_explorer') {
           btn.disabled = true;
           this.ws.request({ type: 'robot_command', robot_id: rid, action: act })
             .then(r => { btn.disabled = false; this._toast(r); });
@@ -96,7 +96,8 @@ export class RobotPanel {
     const streamOn = this._streamMode[r.robot_id] === true;
     // Three control buttons always visible; disabled until SSH online.
     const controls = `<div class="robot-ssh">
-         <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch" ${dis}>${icon('play', 12)} 启动</button>
+         <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch" ${dis} title="SSH 拉起 FAST-LIO + 录制 + 桥接全套">${icon('play', 12)} 启动</button>
+         <button class="ssh-btn explore-btn" data-robot="${esc(r.robot_id)}" data-action="launch_explorer" ${dis} title="SSH 拉起前沿探索">${icon('refresh', 12)} 探索</button>
          <button class="ssh-btn takeover ${isTakeover ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="takeover" ${dis} title="接管后用 WASD 键盘控制">${isTakeover ? '◉ 接管中' : '⌨ 接管'}</button>
          <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" ${dis} title="紧急停止">${icon('estop', 12)} 急停</button>
        </div>
@@ -114,7 +115,7 @@ export class RobotPanel {
         <div class="robot-head">
           <span class="robot-dot"></span>
           <div class="robot-info">
-            <div class="robot-name">${esc(r.label || r.robot_id)} <span class="robot-id">${esc(r.robot_id)}</span></div>
+            <div class="robot-name">${esc(r.label || r.robot_id)} <span class="robot-id">${esc(r.robot_id)}</span>${batteryTag(r.battery_pct)}</div>
             <div class="robot-host">${esc(r.user)}@${esc(r.host)} · ${r.state}${err}</div>
           </div>
           <button class="btn-icon danger rm-inst" data-robot="${esc(r.robot_id)}" data-action="remove" title="Remove robot">${icon('trash', 14)}</button>
@@ -231,6 +232,11 @@ function stateClass(s) {
   if (s === 'online') return 'st-online';
   if (s === 'connecting' || s === 'reconnecting') return 'st-warn';
   return 'st-err';
+}
+function batteryTag(pct) {
+  if (pct == null || pct < 0) return '';
+  const cls = pct > 50 ? 'bat-ok' : pct > 20 ? 'bat-warn' : 'bat-err';
+  return ` <span class="battery ${cls}">🔋${pct}%</span>`;
 }
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g,
