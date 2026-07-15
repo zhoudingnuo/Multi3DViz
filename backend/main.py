@@ -394,6 +394,14 @@ class Backend:
             if inst is not None:
                 inst.force_predict()
             await ws.send(proto.make_response(rid, ok=inst is not None))
+        elif mtype == "confirm_targets":
+            # Manual confirm frontier targets (Enter key in non-auto explore mode).
+            ex = self.registry.get("DualAgentExplorer")
+            if ex is not None:
+                ok = ex.confirm_targets()
+            else:
+                ok = False
+            await ws.send(proto.make_response(rid, ok=ok))
         else:
             await ws.send(proto.make_error(rid, f"unknown type {mtype!r}"))
 

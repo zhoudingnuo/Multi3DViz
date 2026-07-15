@@ -62,6 +62,9 @@ class ExplorerService(ServicePlugin):
                      "label": "Robot B", "group": "Robots"},
         "dispatch_targets": {"type": "bool", "default": True,
                              "label": "SSH-dispatch targets to robots", "group": "Behavior"},
+        "auto_explore": {"type": "bool", "default": True,
+                         "label": "Auto explore (toggle: on=auto dispatch, off=manual confirm)",
+                         "group": "Behavior"},
         "target_path_a": {"type": "string",
                           "default": "/home/unitree/sda2/online/ccenter_target_a.txt",
                           "label": "Robot A target file (remote)", "group": "Dispatch"},
@@ -240,10 +243,44 @@ class ExplorerService(ServicePlugin):
             if len(traj) > 5000:
                 del traj[:1000]   # cap memory
 
+    def confirm_targets(self):
+        """Manual confirm: dispatch the current targets to robots immediately,
+        bypassing the auto_explore toggle. Called when the user presses Enter
+        in manual (non-auto) mode. Returns True if any target was dispatched."""
+        ex = self._explorer
+        if ex is None or self._gmap is None:
+            return False
+        fa = self.ctx.data.latest(self.get("source_a", "robot_a"))
+        fb = self.ctx.data.latest(self.get("source_b", "robot_b"))
+        if fa is None or fb is None:
+            return False
+        pos_a = self._robot_pos(fa, np.eye(4))
+        pos_b = self._robot_pos(fb, self._T_b_to_a or np.eye(4))
+        if pos_a is None or pos_b is None:
+            return False
+        # Force dispatch by clearing cooldown latches.
+        self._last_dispatch = [0.0, 0.0]
+        self._dispatch_now(pos_a, pos_b)
+        return True
+
+    def _dispatch_now(self, pos_a, pos_b):
+        """Internal: dispatch targets regardless of auto_explore state."""
+        saved = self.get("auto_explore", True)
+        self._prop_values["auto_explore"] = True  # temporarily override
+        try:
+            self._maybe_dispatch(pos_a, pos_b)
+        finally:
+            self._prop_values["auto_explore"] = saved
+
     def _maybe_dispatch(self, pos_a, pos_b):
-        """SSH-write target files to both robots (best-effort, rate-limited)."""
+        """SSH-write target files to both robots (best-effort, rate-limited).
+        Only dispatches when auto_explore is ON. When OFF, targets are computed
+        + displayed but NOT dispatched — the user confirms via Enter key
+        (confirm_targets action) to send them."""
         if not self.get("dispatch_targets", True):
             return
+        if not self.get("auto_explore", True):
+            return  # manual mode — wait for confirm_targets
         if not self.ctx.robots:
             return
         now = time.monotonic()

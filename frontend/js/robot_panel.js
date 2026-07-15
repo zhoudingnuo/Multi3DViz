@@ -16,18 +16,28 @@ export class RobotPanel {
     this._keys = new Set();  // pressed keys for velocity computation
     this._velTimer = null;   // 10Hz velocity send interval
     this._streamMode = {};   // {robot_id: bool} — online(stream) vs batch mode per robot
-    // Restore stream mode from localStorage (persists across restarts).
+    this._exploreMode = {};  // {robot_id: bool} — auto explore on/off per robot
+    // Restore from localStorage (persists across restarts).
     try {
-      const saved = JSON.parse(localStorage.getItem('m3v_streamMode') || '{}');
-      this._streamMode = saved;
-    } catch (_) { this._streamMode = {}; }
+      this._streamMode = JSON.parse(localStorage.getItem('m3v_streamMode') || '{}');
+      this._exploreMode = JSON.parse(localStorage.getItem('m3v_exploreMode') || '{}');
+    } catch (_) { this._streamMode = {}; this._exploreMode = {}; }
     this._render();
     // Global keyboard handler (bound once, checks _takeover).
     this._onKeyDown = (e) => {
+      // Space = toggle stand/lie during takeover.
       if (this._takeover && e.key === ' ' && !e.repeat) {
         e.preventDefault();
         this._handleSpace();
         return;
+      }
+      // Enter = confirm frontier targets (when not in auto-explore mode).
+      if (e.key === 'Enter' && !e.repeat) {
+        const anyManual = Object.values(this._exploreMode).some(v => v !== true);
+        if (anyManual) {
+          this.ws.request({ type: 'confirm_targets' })
+            .then(r => this._toast(r));
+        }
       }
       this._handleKey(e, true);
     };
@@ -68,11 +78,18 @@ export class RobotPanel {
         if (act === 'remove') {
           if (!confirm(`Remove robot ${rid}?`)) return;
           this.ws.request({ type: 'robot_remove', robot_id: rid });
-        } else if (act === 'launch' || act === 'stop' || act === 'launch_explorer'
-                   || act === 'stand_up' || act === 'lie_down') {
+        } else if (act === 'launch' || act === 'stop') {
           btn.disabled = true;
           this.ws.request({ type: 'robot_command', robot_id: rid, action: act })
             .then(r => { btn.disabled = false; this._toast(r); });
+        } else if (act === 'toggle_explore') {
+          // Toggle auto-explore state (visual + backend property).
+          const on = !(this._exploreMode[rid] === true);
+          this._exploreMode[rid] = on;
+          try { localStorage.setItem('m3v_exploreMode', JSON.stringify(this._exploreMode)); } catch(_) {}
+          this.ws.send({ type: 'set_property', name: 'DualAgentExplorer',
+                         key: 'auto_explore', value: on });
+          this._renderList();
         } else if (act === 'estop') {
           this.ws.request({ type: 'robot_command', robot_id: rid, action: 'estop' })
             .then(r => this._toast(r));
@@ -106,11 +123,11 @@ export class RobotPanel {
     const isTakeover = this._takeover === r.robot_id;
     const dis = online ? '' : 'disabled title="等待 SSH 连接..."';
     const streamOn = this._streamMode[r.robot_id] === true;
-    // Three control buttons always visible; disabled until SSH online.
+    const exploreOn = this._exploreMode[r.robot_id] === true;
+    // Control buttons always visible; disabled until SSH online.
     const controls = `<div class="robot-ssh">
          <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch" ${dis} title="SSH 拉起 FAST-LIO + 录制 + 桥接全套">${icon('play', 12)} 启动</button>
-         <button class="ssh-btn explore-btn" data-robot="${esc(r.robot_id)}" data-action="launch_explorer" ${dis} title="SSH 拉起前沿探索">${icon('refresh', 12)} 探索</button>
-         <button class="ssh-btn standup-btn" data-robot="${esc(r.robot_id)}" data-action="stand_up" ${dis} title="SSH 让机器狗站立">${icon('dot', 12)} 站立</button>
+         <button class="ssh-btn explore-btn ${exploreOn ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="toggle_explore" ${dis} title="${exploreOn ? '自动探索中（点击关闭）' : '开启自动探索'}">${icon('refresh', 12)} ${exploreOn ? '◉ 探索' : '探索'}</button>
          <button class="ssh-btn takeover ${isTakeover ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="takeover" ${dis} title="接管后用 WASD 键盘控制">${isTakeover ? '◉ 接管中' : '⌨ 接管'}</button>
          <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" ${dis} title="紧急停止：停运动+趴下">${icon('estop', 12)} 急停</button>
        </div>
@@ -119,6 +136,7 @@ export class RobotPanel {
            <input type="checkbox" data-robot="${esc(r.robot_id)}" data-action="stream" ${streamOn ? 'checked' : ''}/>
            <span>在线模式</span>
          </label>
+         ${!exploreOn ? '<span class="manual-hint">手动模式 · Enter 确认目标</span>' : ''}
        </div>`;
     // Keyboard hint shown when THIS robot is under takeover.
     const hint = isTakeover

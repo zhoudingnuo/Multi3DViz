@@ -331,6 +331,15 @@ html, body {
 .mode-toggle input { accent-color: var(--accent); width: 13px; height: 13px; cursor: pointer; }
 .mode-toggle input:disabled { opacity: 0.3; cursor: default; }
 
+/* Explore button toggle state */
+.ssh-btn.explore-btn.active {
+  background: rgba(78,201,176,0.15); color: var(--accent);
+  border-color: var(--accent);
+}
+.manual-hint {
+  font-size: 10px; color: var(--status-warn); font-family: var(--font-mono);
+  margin-left: 6px;
+}
 /* Takeover button — toggle state highlighted when active */
 .ssh-btn.takeover { border-color: var(--border-soft); }
 .ssh-btn.takeover:hover:not(:disabled) { border-color: var(--status-warn); color: var(--status-warn); }
