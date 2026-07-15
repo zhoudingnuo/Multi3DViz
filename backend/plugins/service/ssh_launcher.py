@@ -295,11 +295,16 @@ class SSHLauncherService(ServicePlugin):
 
     def _takeover_start(self, conn):
         """Called when user enters keyboard takeover mode. Opens the persistent
-        m3v_move channel so velocity commands are sub-ms latency. The m3v_move
-        process auto-sends recovery_stand on startup (dog stands up)."""
+        m3v_move channel in a background thread so the WS handler returns
+        immediately (DDS init takes ~4s). Dog does NOT auto-stand (safe mode)."""
         rid = conn.cfg.robot_id
-        ok = self.open_sport_channel(conn)
-        return {"ok": ok, "msg": "m3v_move started, dog standing" if ok else "failed"}
+        if rid in self._sport_chan and self._sport_chan[rid] is not None:
+            return {"ok": True, "msg": "channel already open"}
+        # Open channel in background — don't block the WS response.
+        import threading as _th
+        _th.Thread(target=self.open_sport_channel, args=(conn,), daemon=True,
+                   name=f"sport-chan-{rid}").start()
+        return {"ok": True, "msg": "m3v_move starting (safe mode, dog not moving)"}
 
     def _takeover_end(self, conn):
         """Called when user exits takeover mode. Closes the m3v_move channel

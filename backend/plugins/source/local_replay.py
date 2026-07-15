@@ -155,7 +155,23 @@ class LocalReplaySource(DataSourcePlugin):
         if key == "voxel_size":
             self._cached_pub_frame = -1
             self._cached_pub_pts = None
-        # Re-load only when data-source identity changes, not on playback tweaks.
+        # Mode switch (stream/batch or instant_load): reset state so the
+        # source reloads from scratch in the new mode. Without this, switching
+        # to stream mode after batch already loaded shows stale history.
+        if key in ("stream_mode", "instant_load"):
+            self._loaded_root = None
+            self._frames = None
+            self._vis_pts = None
+            self._vis_cum = None
+            self._vis_colors = None
+            self._odom = None
+            self._n = 0
+            self._cursor = 0.0
+            self._last_pushed = 0
+            self._cached_pub_frame = -1
+            self._cached_pub_pts = None
+            log.info("mode switch: %s=%s → state reset, will reload next tick", key, value)
+        # Re-load only when data-source identity changes.
         if key in ("data_root", "robot"):
             if self.get("stream_mode", False):
                 # Stream mode: reset stream state so update() re-resolves the

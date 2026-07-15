@@ -103,14 +103,14 @@ export class RobotPanel {
         const rid = cb.dataset.robot;
         const on = cb.checked;
         this._streamMode[rid] = on;
-        // Persist to localStorage so it survives restarts.
         try { localStorage.setItem('m3v_streamMode', JSON.stringify(this._streamMode)); } catch(_) {}
-        // Send to backend (works even if robot is offline — the source plugin
-        // picks up the property when it next loads data).
-        this.ws.send({ type: 'set_property', name: 'LocalReplay',
-                       key: 'stream_mode', value: on });
-        this.ws.send({ type: 'set_property', name: 'LocalReplay',
-                       key: 'instant_load', value: !on });
+        // Send to the matching LocalReplay instance (by instance_id).
+        // LocalReplay#1 = robot_a, LocalReplay#2 = robot_b.
+        const instNum = rid.endsWith('a') || rid.endsWith('A') ? 1 : 2;
+        const iid = `LocalReplay#${instNum}`;
+        this.ws.send({ type: 'set_property', instance_id: iid, key: 'stream_mode', value: on });
+        this.ws.send({ type: 'set_property', instance_id: iid, key: 'instant_load', value: !on });
+        if (window.dbg) window.dbg(`在线模式 ${rid}: ${on ? 'ON (stream)' : 'OFF (batch)'} → ${iid}`, 'warn');
       });
       });
     });
@@ -215,13 +215,13 @@ export class RobotPanel {
       this.ws.request({ type: 'robot_command', robot_id: rid, action: 'takeover_start' })
         .then(r => {
           if (window.dbg) window.dbg(`takeover_start: ${JSON.stringify(r)}`, r.ok ? 'ok' : 'err');
-          if (r && r.ok && this._velTimer) clearInterval(this._velTimer);
           if (r && r.ok) {
-            this._velTimer = setInterval(() => this._sendVel(), 100); // 10Hz
-            if (window.dbg) window.dbg(`takeover STARTED for ${rid} — m3v_move ready, WASD/QE=move`, 'ok');
+            this._velTimer = setInterval(() => this._sendVel(), 100);
+            if (window.dbg) window.dbg(`takeover active for ${rid} — channel starting in bg, press SPACE to stand`, 'ok');
           } else {
-            if (window.dbg) window.dbg(`takeover FAILED — m3v_move not started`, 'err');
+            if (window.dbg) window.dbg(`takeover FAILED`, 'err');
             this._takeover = null;
+            this._renderList();
           }
         });
       // Start timer optimistically (will be cleared if start fails).
