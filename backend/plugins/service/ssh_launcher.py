@@ -16,6 +16,7 @@ in `nohup ... &` so they survive the SSH channel closing.
 from __future__ import annotations
 import os
 import sys
+import json
 import shlex
 import logging
 
@@ -91,6 +92,10 @@ class SSHLauncherService(ServicePlugin):
             return self._launch(conn)
         if action == "estop":
             return self._estop(conn)
+        if action == "stand_up":
+            return self._stand_up(conn)
+        if action == "lie_down":
+            return self._lie_down(conn)
         if action == "vel":
             return self._send_vel(conn, value)
         if action == "run":
@@ -175,59 +180,64 @@ class SSHLauncherService(ServicePlugin):
         log.info("stopped pipeline on %s", rid)
         return {"ok": True}
 
-    def _estop(self, conn):
-        """Emergency stop: send a halt command to the robot's motion controller
-        via SSH. Tries the Unitree TCP bridge first (go2_search protocol via
-        go2_tcp_client), then falls back to Agibot's /agibot_cmd topic.
-        Best-effort — if neither is running the SSH command just no-ops."""
-        rid = conn.cfg.robot_id
-        # Unitree Go2: write "0" to the TCP bridge's command channel via a
-        # short python one-liner that connects to localhost:21520 and sends STOP.
-        # Agibot: publish "0 0 0" to /agibot_cmd (ros2 topic pub --once).
-        # We try both — whichever is running on the robot will catch it.
-        estop_cmd = (
-            # Try Unitree TCP bridge (Go2TcpClient protocol: api_id 1003 = STOPMOVE)
+    def _tcp_bridge_cmd(self, conn, api_id, parameter=None):
+        """Send a single command to the Go2 TCP bridge (localhost:21520) via SSH.
+        api_id follows the Go2TcpClient protocol:
+          1002 = BALANCESTAND, 1003 = STOPMOVE, 1004 = STANDUP,
+          1006 = RECOVERYSTAND, 1008 = MOVE.
+        parameter is a dict (e.g. {"x":0,"y":0,"z":0} for MOVE) or None."""
+        param_str = json.dumps(parameter or {})
+        py = (
             "python3 -c \""
-            "import socket,struct;"
+            "import socket,json;"
             "try:{"
-            "s=socket.socket();s.connect(('127.0.0.1',21520));"
-            "s.sendall(b'{\\\"api_id\\\":1003,\\\"parameter\\\":{}}\\n');"
+            "s=socket.socket();s.settimeout(3);s.connect(('127.0.0.1',21520));"
+            f"s.sendall(json.dumps({{'api_id':{api_id},'parameter':{param_str}}})+b'\\n');"
             "s.close()"
             "}except:pass"
-            "\" 2>/dev/null; "
-            # Try Agibot /agibot_cmd (ROS2)
-            "bash -c 'source /opt/ros/*/setup.bash 2>/dev/null && "
-            "ros2 topic pub --once /agibot_cmd std_msgs/String \"{data: '0'}\" "
-            "2>/dev/null' &"
+            "\" 2>/dev/null"
         )
-        rc, out = conn.run(estop_cmd, timeout=5)
-        log.warning("ESTOP on %s: rc=%d", rid, rc)
-        return {"ok": rc == 0}
+        rc, out = conn.run(py, timeout=6)
+        return rc == 0
+
+    def _estop(self, conn):
+        """Emergency stop: stop all motion (api 1003 STOPMOVE) then lie down
+        (api 1006 RECOVERYSTAND makes the dog drop to a safe prone posture).
+        Two sequential TCP bridge commands via SSH."""
+        rid = conn.cfg.robot_id
+        log.warning("ESTOP on %s: stopmove + recovery_stand", rid)
+        # 1) Stop all motion immediately.
+        self._tcp_bridge_cmd(conn, 1003)
+        # 2) Recovery stand → dog drops to safe prone position.
+        self._tcp_bridge_cmd(conn, 1006)
+        return {"ok": True}
+
+    def _stand_up(self, conn):
+        """Stand the dog up (api 1004 STANDUP). Must be called before MOVE
+        commands or takeover — the dog won't move while prone."""
+        rid = conn.cfg.robot_id
+        log.info("STANDUP on %s", rid)
+        ok = self._tcp_bridge_cmd(conn, 1004)
+        return {"ok": ok}
+
+    def _lie_down(self, conn):
+        """Lie the dog down (api 1006 RECOVERYSTAND from standing drops to prone).
+        Safe resting posture — motors locked."""
+        rid = conn.cfg.robot_id
+        log.info("LIEDOWN on %s", rid)
+        ok = self._tcp_bridge_cmd(conn, 1006)
+        return {"ok": ok}
 
     def _send_vel(self, conn, value):
-        """Send a one-shot velocity command {vx, vy, yaw} to the robot's motion
-        controller via SSH. Used for keyboard takeover (WASD). Same dual-path
-        as _estop: Unitree TCP bridge (api 1008 = MOVE) + Agibot /agibot_cmd.
-        Rate-limited to avoid flooding SSH — the frontend sends at ~10Hz."""
+        """Send a one-shot velocity command {vx, vy, yaw} to the Go2 TCP bridge
+        (api 1008 MOVE). Used for keyboard takeover (WASD) at ~10Hz."""
         if not isinstance(value, dict):
             return {"ok": False, "error": "vel value must be {vx,vy,yaw}"}
         vx = float(value.get("vx", 0))
         vy = float(value.get("vy", 0))
         yaw = float(value.get("yaw", 0))
-        rid = conn.cfg.robot_id
-        # Unitree TCP bridge: api_id 1008 = MOVE, parameter {x:vx, y:vy, z:yaw}
-        vel_cmd = (
-            "python3 -c \""
-            f"import socket,json;"
-            "try:{{"
-            "s=socket.socket();s.connect(('127.0.0.1',21520));"
-            f"s.sendall(json.dumps({{'api_id':1008,'parameter':{{'x':{vx},'y':{vy},'z':{yaw}}}}})+b'\\n');"
-            "s.close()"
-            "}}except:pass"
-            "\" 2>/dev/null"
-        )
-        rc, out = conn.run(vel_cmd, timeout=3)
-        return {"ok": rc == 0}
+        ok = self._tcp_bridge_cmd(conn, 1008, {"x": vx, "y": vy, "z": yaw})
+        return {"ok": ok}
 
     # --- per-tick: auto-launch on online transition ---
     def update(self, dt):

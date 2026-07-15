@@ -56,7 +56,8 @@ export class RobotPanel {
         if (act === 'remove') {
           if (!confirm(`Remove robot ${rid}?`)) return;
           this.ws.request({ type: 'robot_remove', robot_id: rid });
-        } else if (act === 'launch' || act === 'stop' || act === 'launch_explorer') {
+        } else if (act === 'launch' || act === 'stop' || act === 'launch_explorer'
+                   || act === 'stand_up' || act === 'lie_down') {
           btn.disabled = true;
           this.ws.request({ type: 'robot_command', robot_id: rid, action: act })
             .then(r => { btn.disabled = false; this._toast(r); });
@@ -98,8 +99,9 @@ export class RobotPanel {
     const controls = `<div class="robot-ssh">
          <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch" ${dis} title="SSH 拉起 FAST-LIO + 录制 + 桥接全套">${icon('play', 12)} 启动</button>
          <button class="ssh-btn explore-btn" data-robot="${esc(r.robot_id)}" data-action="launch_explorer" ${dis} title="SSH 拉起前沿探索">${icon('refresh', 12)} 探索</button>
+         <button class="ssh-btn standup-btn" data-robot="${esc(r.robot_id)}" data-action="stand_up" ${dis} title="SSH 让机器狗站立">${icon('dot', 12)} 站立</button>
          <button class="ssh-btn takeover ${isTakeover ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="takeover" ${dis} title="接管后用 WASD 键盘控制">${isTakeover ? '◉ 接管中' : '⌨ 接管'}</button>
-         <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" ${dis} title="紧急停止">${icon('estop', 12)} 急停</button>
+         <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" ${dis} title="紧急停止：停运动+趴下">${icon('estop', 12)} 急停</button>
        </div>
        <div class="robot-mode">
          <label class="mode-toggle" title="在线模式：只加载 5 分钟内的新数据（stream），否则回放全部历史（batch）">
