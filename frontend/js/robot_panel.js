@@ -200,6 +200,7 @@ export class RobotPanel {
 
   // --- keyboard takeover (WASD velocity control) ---
   _toggleTakeover(rid) {
+    if (window.dbg) window.dbg(`takeover toggle: ${rid} (currently ${this._takeover || 'none'})`, 'warn');
     if (this._takeover === rid) {
       // Release: send a zero velocity + stop the timer.
       this._takeover = null;
@@ -212,6 +213,7 @@ export class RobotPanel {
       this._keys.clear();
       if (this._velTimer) clearInterval(this._velTimer);
       this._velTimer = setInterval(() => this._sendVel(), 100); // 10Hz
+      if (window.dbg) window.dbg(`takeover STARTED for ${rid} — WASD/QE=move, space=stand/lie, keys active`, 'ok');
     }
     this._renderList();
   }
@@ -222,6 +224,7 @@ export class RobotPanel {
     const k = e.key.toLowerCase();
     if (!'wasdqe'.includes(k)) return;
     if (down) this._keys.add(k); else this._keys.delete(k);
+    if (window.dbg) window.dbg(`key ${down ? '↓' : '↑'} ${k} → keys=[${[...this._keys].join(',')}]`, '');
   }
 
   _handleSpace() {
@@ -245,6 +248,10 @@ export class RobotPanel {
     if (k.has('d')) vy -= SIDE;
     if (k.has('q')) yaw += TURN;
     if (k.has('e')) yaw -= TURN;
+    // Log velocity every ~1s (not every 100ms — too spammy).
+    this._velLogT = (this._velLogT || 0) + 1;
+    if (window.dbg && this._velLogT % 10 === 0)
+      window.dbg(`vel ${this._takeover}: vx=${vx.toFixed(2)} vy=${vy.toFixed(2)} yaw=${yaw.toFixed(2)}`, 'send');
     this.ws.send({ type: 'robot_vel', robot_id: this._takeover, vx, vy, yaw });
   }
 

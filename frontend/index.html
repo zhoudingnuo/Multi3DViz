@@ -57,6 +57,16 @@
       <div class="item">explored <b id="st-expl">0%</b></div>
       <div class="item">robots <b id="st-robots">0/0</b></div>
       <div class="item" style="margin-left:auto">mem <b id="st-mem">0</b>MB · cpu <b id="st-cpu">0</b>% · fps <b id="st-fps">0</b></div>
+      <button id="dbg-toggle" class="dbg-toggle" title="调试信息台">🐛</button>
+    </div>
+
+    <!-- Debug panel (floating, bottom-right) -->
+    <div id="dbg-panel">
+      <div class="dbg-head">
+        <span>Debug Console</span>
+        <button id="dbg-clear">clear</button>
+      </div>
+      <div id="dbg-log"></div>
     </div>
   </div>
 

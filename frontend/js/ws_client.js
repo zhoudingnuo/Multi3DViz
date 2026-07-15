@@ -61,6 +61,10 @@ export class WSClient {
   send(obj) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(obj));
+      if (window.dbg && obj.type !== 'robot_vel')  // skip high-freq vel
+        window.dbg(`→ ${obj.type} ${JSON.stringify(obj).slice(0, 120)}`, 'send');
+    } else {
+      if (window.dbg) window.dbg(`→ ${obj.type} FAILED (ws not open)`, 'err');
     }
   }
 
@@ -68,7 +72,14 @@ export class WSClient {
   request(obj) {
     const id = this._reqId++;
     return new Promise((resolve) => {
-      this._pending.set(id, resolve);
+      this._pending.set(id, (msg) => {
+        if (window.dbg) {
+          const ok = msg && msg.ok !== false;
+          window.dbg(`← ${obj.type} ${ok ? 'ok' : 'FAIL'} ${JSON.stringify(msg).slice(0, 120)}`,
+                     ok ? 'ok' : 'err');
+        }
+        resolve(msg);
+      });
       this.send({ ...obj, id });
     });
   }

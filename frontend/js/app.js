@@ -1,3 +1,25 @@
+// --- global debug console ---
+window.dbg = function(msg, level = '') {
+  const log = document.getElementById('dbg-log');
+  if (!log) return;
+  const t = new Date().toLocaleTimeString('en', { hour12: false });
+  const cls = level ? `dbg-${level}` : '';
+  const line = document.createElement('div');
+  line.className = `dbg-line ${cls}`;
+  line.innerHTML = `<span class="dbg-time">${t}</span> ${msg}`;
+  log.appendChild(line);
+  // Cap at 200 lines.
+  while (log.children.length > 200) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+};
+// Toggle button.
+document.getElementById('dbg-toggle').addEventListener('click', () => {
+  document.getElementById('dbg-panel').classList.toggle('open');
+});
+document.getElementById('dbg-clear').addEventListener('click', () => {
+  document.getElementById('dbg-log').innerHTML = '';
+});
+
 // app.js — frontend bootstrap. Wires WSClient events to SceneManager +
 // GridView + PluginPanel + playback bar + status bar. Reads the backend URL
 // injected by Electron's preload; falls back to a fixed port for browser dev.
