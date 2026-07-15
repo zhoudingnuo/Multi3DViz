@@ -108,7 +108,7 @@ export class RobotPanel {
         // Send to the matching LocalReplay instance (by instance_id).
         // LocalReplay#1 = robot_a, LocalReplay#2 = robot_b.
         // Send to ALL LocalReplay instances (set_property with name applies
-        # to every matching instance). This is simpler and more robust than
+        // to every matching instance). This is simpler and more robust than
         // guessing instance_ids.
         this.ws.send({ type: 'set_property', name: 'LocalReplay', key: 'stream_mode', value: on });
         this.ws.send({ type: 'set_property', name: 'LocalReplay', key: 'instant_load', value: !on });
