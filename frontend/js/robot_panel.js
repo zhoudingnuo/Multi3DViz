@@ -18,7 +18,15 @@ export class RobotPanel {
     this._streamMode = {};   // {robot_id: bool} — online(stream) vs batch mode per robot
     this._render();
     // Global keyboard handler (bound once, checks _takeover).
-    this._onKeyDown = (e) => this._handleKey(e, true);
+    this._onKeyDown = (e) => {
+      // Space is a one-shot toggle (stand/lie), handled separately from WASD.
+      if (this._takeover && e.key === ' ' && !e.repeat) {
+        e.preventDefault();
+        this._handleSpace();
+        return;
+      }
+      this._handleKey(e, true);
+    };
     this._onKeyUp = (e) => this._handleKey(e, false);
     document.addEventListener('keydown', this._onKeyDown);
     document.addEventListener('keyup', this._onKeyUp);
@@ -111,7 +119,7 @@ export class RobotPanel {
        </div>`;
     // Keyboard hint shown when THIS robot is under takeover.
     const hint = isTakeover
-      ? `<div class="takeover-hint">W/S 前进后退 · A/D 左右 · Q/E 转向 · 松开=停</div>`
+      ? `<div class="takeover-hint">W/S 前进后退 · A/D 左右 · Q/E 转向 · 空格 站立/趴下</div>`
       : '';
     return `<div class="robot-card ${cls} ${isTakeover ? 'takeover' : ''}">
         <div class="robot-head">
@@ -189,13 +197,20 @@ export class RobotPanel {
 
   _handleKey(e, down) {
     if (!this._takeover) return;
-    // Ignore key repeat for keydown (browser fires repeatedly).
     if (down && e.repeat) return;
     const k = e.key.toLowerCase();
-    if (!'wasdqe '.includes(k)) return;
+    if (!'wasdqe'.includes(k)) return;
     if (down) this._keys.add(k); else this._keys.delete(k);
-    // Prevent page scroll on space.
-    if (k === ' ') e.preventDefault();
+  }
+
+  _handleSpace() {
+    // Space = toggle stand/lie (one-shot, not held). Sends a command via SSH
+    // to the robot's TCP bridge (Unitree api 1004 standUp / 1006 recoveryStand
+    // alternating with lie-down).
+    if (!this._takeover) return;
+    this.ws.request({ type: 'robot_command', robot_id: this._takeover,
+                      action: 'toggle_pose' })
+      .then(r => this._toast(r));
   }
 
   _sendVel() {
@@ -209,7 +224,6 @@ export class RobotPanel {
     if (k.has('d')) vy -= SIDE;
     if (k.has('q')) yaw += TURN;
     if (k.has('e')) yaw -= TURN;
-    if (k.has(' ')) { vx = 0; vy = 0; yaw = 0; } // space = brake
     this.ws.send({ type: 'robot_vel', robot_id: this._takeover, vx, vy, yaw });
   }
 

@@ -66,6 +66,7 @@ class SSHLauncherService(ServicePlugin):
         # robot_id -> True once we've launched on it (so reconnects don't
         # re-launch unless the user explicitly stops+launches again).
         self._launched = set()
+        self._standing = {}   # robot_id → bool (tracks stand/lie state for toggle)
 
     def on_enable(self):
         log.info("SSHLauncher ready")
@@ -92,6 +93,8 @@ class SSHLauncherService(ServicePlugin):
             return self._launch(conn)
         if action == "estop":
             return self._estop(conn)
+        if action == "toggle_pose":
+            return self._toggle_pose(conn)
         if action == "stand_up":
             return self._stand_up(conn)
         if action == "lie_down":
@@ -217,28 +220,45 @@ class SSHLauncherService(ServicePlugin):
         return rc == 0
 
     def _estop(self, conn):
-        """Emergency stop: stop all motion then damp (motors to safe damping).
-        Uses DDS direct (a2_sport_client) — no bridge needed.
-        cmd 2 = stop_move, cmd 0 = damp (motors release to damping, dog drops)."""
+        """Emergency stop: send zero velocity, then stop_move, then damp (lie
+        down). The zero-vel ensures the dog isn't mid-stride when damp hits."""
         rid = conn.cfg.robot_id
-        log.warning("ESTOP on %s: stop_move + damp", rid)
+        log.warning("ESTOP on %s: zero_vel + stop_move + damp", rid)
+        self._send_vel(conn, {"vx": 0, "vy": 0, "yaw": 0})  # zero velocity first
         self._go2_cmd(conn, 2)   # stop_move
         self._go2_cmd(conn, 0)   # damp — motors to damping, dog lies down safely
         return {"ok": True}
 
+    def _toggle_pose(self, conn):
+        """Toggle between standing and lying down. Tracks the current pose
+        per-robot (the bridge doesn't expose mode reliably). Used by the
+        spacebar during keyboard takeover."""
+        rid = conn.cfg.robot_id
+        standing = self._standing.get(rid, False)
+        if standing:
+            log.info("TOGGLE_POSE on %s: standing → lying", rid)
+            ok = self._go2_cmd(conn, 3)   # stand_down (lie down)
+            self._standing[rid] = False
+        else:
+            log.info("TOGGLE_POSE on %s: lying → standing", rid)
+            ok = self._go2_cmd(conn, 11)  # stand_up
+            self._standing[rid] = True
+        return {"ok": ok, "standing": self._standing[rid]}
+
     def _stand_up(self, conn):
-        """Stand the dog up (cmd 11 = stand_up). Must be called before MOVE
-        commands or takeover — the dog won't move while prone."""
+        """Stand the dog up (cmd 11 = stand_up)."""
         rid = conn.cfg.robot_id
         log.info("STANDUP on %s", rid)
-        ok = self._go2_cmd(conn, 11)   # stand_up
+        ok = self._go2_cmd(conn, 11)
+        self._standing[rid] = True
         return {"ok": ok}
 
     def _lie_down(self, conn):
         """Lie the dog down (cmd 3 = stand_down). Safe resting posture."""
         rid = conn.cfg.robot_id
         log.info("LIEDOWN on %s", rid)
-        ok = self._go2_cmd(conn, 3)   # stand_down
+        ok = self._go2_cmd(conn, 3)
+        self._standing[rid] = False
         return {"ok": ok}
 
     def _send_vel(self, conn, value):
