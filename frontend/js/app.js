@@ -239,6 +239,11 @@ ws.onInfoState = (i) => {
     if (posB) parts.push(`B(${posB[0].toFixed(1)},${posB[1].toFixed(1)},${posB[2].toFixed(0)}°)`);
     esPos.textContent = parts.length ? parts.join(' ') : '—';
   }
+  // Update 2D grid robot position markers.
+  if (typeof grid !== 'undefined' && grid) {
+    grid.setRobotPos('robot_a', posA ? [posA[0], posA[1]] : null, posA ? posA[2] : 0);
+    grid.setRobotPos('robot_b', posB ? [posB[0], posB[1]] : null, posB ? posB[2] : 0);
+  }
   const esDist = document.getElementById('es-dist');
   if (esDist) {
     const parts = [];

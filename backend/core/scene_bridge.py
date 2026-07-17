@@ -182,5 +182,11 @@ class SceneBridge:
                     "position": list(p.get("position", [0, 0, 0])),
                     "color": list(p.get("color", [1, 1, 1])),
                     "meta": obj.meta}
+        if obj.kind == "arrow":
+            return {"op": action, "id": obj.id, "kind": "arrow",
+                    "color": list(p.get("color", [1, 1, 0])),
+                    "pose": p.get("pose", _identity_pose()),
+                    "length": float(p.get("length", 0.5)),
+                    "meta": obj.meta}
         return {"op": action, "id": obj.id, "kind": obj.kind,
                 "payload": p, "meta": obj.meta}

@@ -138,6 +138,7 @@ export class SceneManager {
     else if (op.kind === 'box') this._setBox(op);
     else if (op.kind === 'line') this._setLine(op);
     else if (op.kind === 'mesh') this._setMesh(op);
+    else if (op.kind === 'arrow') this._setArrow(op);
   }
 
   _setPoints(op) {
@@ -187,6 +188,27 @@ export class SceneManager {
     const T = op.pose || identity();
     box.matrix.fromArray(flatten(T));
     box.matrixAutoUpdate = false;
+  }
+
+  _setArrow(op) {
+    let arrow = this.objects.get(op.id);
+    const T = op.pose || identity();
+    const px = T[0][3], py = T[1][3], pz = (T[2] || [0,0,0])[3] || 0;
+    const dx = T[0][0], dy = T[1][0];
+    const color = rgb(op.color || [1, 1, 0]);
+    const length = op.length || 0.5;
+    if (!arrow) {
+      arrow = new THREE.ArrowHelper(
+        new THREE.Vector3(dx, dy, 0).normalize(),
+        new THREE.Vector3(px, py, pz + 0.3),
+        length, color, length * 0.4, length * 0.2);
+      this.scene.add(arrow);
+      this.objects.set(op.id, arrow);
+    } else {
+      arrow.position.set(px, py, pz + 0.3);
+      arrow.setDirection(new THREE.Vector3(dx, dy, 0).normalize());
+      arrow.setColor(color);
+    }
   }
 
   _setLine(op) {

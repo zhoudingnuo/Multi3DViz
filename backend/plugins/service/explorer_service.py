@@ -110,10 +110,36 @@ class ExplorerService(ServicePlugin):
 
     # --- main tick ---
     def update(self, dt: float):
-        # TEMPORARILY DISABLED — explorer causes tick loop freeze during
-        # takeover. See _update_inner for the full logic. Will be re-enabled
-        # once the root cause is fixed.
-        return None
+        # Explorer grid/frontier logic is DISABLED (causes tick freeze).
+        # Only publish robot pose arrows so the user can see where robots are.
+        import math as _m
+        sa = self.get("source_a", "robot_a")
+        sb = self.get("source_b", "robot_b")
+        fa = self.ctx.data.latest(sa)
+        fb = self.ctx.data.latest(sb)
+        upd = SceneUpdate()
+        for rid, frame, color in [(sa, fa, [1.0, 0.6, 0.0]),
+                                   (sb, fb, [0.8, 0.0, 1.0])]:
+            if frame is None:
+                continue
+            odom = frame.get("odom")
+            if not odom:
+                continue
+            x = float(odom.get("x", 0)); y = float(odom.get("y", 0))
+            qx = float(odom.get("qx", 0)); qy = float(odom.get("qy", 0))
+            qz = float(odom.get("qz", 0)); qw = float(odom.get("qw", 1))
+            yaw = _m.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+            pose = np.eye(4).tolist()
+            pose[0][3] = x; pose[1][3] = y; pose[2][3] = 0.0
+            c, s = _m.cos(yaw), _m.sin(yaw)
+            pose[0][0] = c; pose[0][1] = -s
+            pose[1][0] = s; pose[1][1] = c
+            upd.update.append(SceneObject(
+                id=f"{rid}_pose", kind="arrow",
+                payload={"color": color, "pose": pose, "length": 0.5},
+                meta={"type": "robot_pose"},
+            ))
+        return upd if upd.update else None
 
     def _bg_compute(self, dt: float):
         """Background thread: run the full explorer update cycle. Stores the

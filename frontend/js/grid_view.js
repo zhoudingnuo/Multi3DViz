@@ -133,6 +133,14 @@ export class GridView {
     this.draw();
   }
 
+  // Set/clear a live robot position marker (world coords + heading deg).
+  setRobotPos(id, worldXY, headingDeg) {
+    if (!this._robotPos) this._robotPos = {};
+    if (worldXY === null) delete this._robotPos[id];
+    else this._robotPos[id] = { x: worldXY[0], y: worldXY[1], heading: headingDeg };
+    this.draw();
+  }
+
   // Receive the semantic overlay grid2d op (UNet classes / room ids).
   setSemOverlay(op) {
     this.semCells = op.cells;
@@ -260,6 +268,53 @@ export class GridView {
         }
       }
       ctx.globalAlpha = 1.0;
+    }
+    // Explored range + robot position markers.
+    if (this._robotPos) {
+      const c = this.cellPx;
+      // Explored circles (semi-transparent, behind markers).
+      const sensorR = 3.0 / this.res * c;
+      ctx.save();
+      ctx.globalAlpha = 0.15;
+      for (const [id, color] of [['robot_a', '#ff8800'], ['robot_b', '#cc00ff']]) {
+        const rp = this._robotPos[id];
+        if (!rp) continue;
+        const gi = (rp.x - this.origin[0]) / this.res;
+        const gj = (rp.y - this.origin[1]) / this.res;
+        const sx = this.px0 + gi * c;
+        const sy = this.py0 + (this.h - 1 - gj) * c;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(sx, sy, sensorR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      // Robot discs + heading triangles.
+      for (const [id, color] of [['robot_a', '#ff8800'], ['robot_b', '#cc00ff']]) {
+        const rp = this._robotPos[id];
+        if (!rp) continue;
+        const gi = (rp.x - this.origin[0]) / this.res;
+        const gj = (rp.y - this.origin[1]) / this.res;
+        const sx = this.px0 + gi * c;
+        const sy = this.py0 + (this.h - 1 - gj) * c;
+        const r = Math.max(6, c * 2.5);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#fcfaf8';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        const rad = rp.heading * Math.PI / 180;
+        const dx = Math.cos(rad), dy = -Math.sin(rad);
+        ctx.fillStyle = '#fcfaf8';
+        ctx.beginPath();
+        ctx.moveTo(sx + dx * r * 1.5, sy + dy * r * 1.5);
+        ctx.lineTo(sx + (-dy - dx) * r * 0.7, sy + (dx - dy) * r * 0.7);
+        ctx.lineTo(sx + (dy - dx) * r * 0.7, sy + (-dx - dy) * r * 0.7);
+        ctx.closePath();
+        ctx.fill();
+      }
     }
     // Target markers (crosshair + filled square) — like ccenter's grid panel.
     // target_a = orange, target_b = magenta. Drawn at world coords.
