@@ -16,6 +16,7 @@ export class RobotPanel {
     this._takeoverLoading = null; // robot_id whose channel is opening (spinner state)
     this._keys = new Set();  // pressed keys for velocity computation
     this._velTimer = null;   // 10Hz velocity send interval
+    this._exploreActive = false;  // interactive explore: first Enter=start, rest=step
     this._streamMode = {};   // {robot_id: bool} — online(stream) vs batch mode per robot
     this._exploreMode = {};  // {robot_id: bool} — auto explore on/off per robot
     // Restore from localStorage (persists across restarts).
@@ -32,7 +33,9 @@ export class RobotPanel {
         this._handleSpace();
         return;
       }
-      // Enter = confirm frontier targets (when not in auto-explore mode).
+      // Enter = confirm frontier targets in manual explore mode (legacy path).
+      // Exploration step execution is now driven by the "执行一步" button in
+      // the explore-status panel (see app.js).
       if (e.key === 'Enter' && !e.repeat) {
         const anyManual = Object.values(this._exploreMode).some(v => v !== true);
         if (anyManual) {
@@ -50,6 +53,36 @@ export class RobotPanel {
   setRobots(robots) {
     this.robots = robots || [];
     this._renderList();
+  }
+
+  // Sync the 在线模式 (stream/batch) checkbox from the backend's authoritative
+  // state. The backend's `state` message carries every plugin instance's
+  // current properties, including LocalReplay#*.stream_mode. This is the source
+  // of truth — it supersedes localStorage, which can drift if the app was
+  // hard-killed before the backend persisted, or if the mode changed from
+  // another client. Called on every state push (connect + property broadcasts).
+  // (exploreMode stays localStorage-only: DualAgentExplorer is a single global
+  // instance with no per-robot robot_id, so it can't be mapped to a row.)
+  syncFromInstances(instances) {
+    if (!Array.isArray(instances)) return;
+    let changed = false;
+    for (const inst of instances) {
+      if (!inst || !inst.properties) continue;
+      if (inst.name !== 'LocalReplay') continue;
+      const rid = inst.properties.robot_id;
+      if (!rid || !('stream_mode' in inst.properties)) continue;
+      const v = inst.properties.stream_mode === true;
+      if (this._streamMode[rid] !== v) {
+        this._streamMode[rid] = v;
+        changed = true;
+      }
+    }
+    if (changed) {
+      try {
+        localStorage.setItem('m3v_streamMode', JSON.stringify(this._streamMode));
+      } catch (_) {}
+      this._renderList();
+    }
   }
 
   // --- render ---
@@ -79,10 +112,15 @@ export class RobotPanel {
         if (act === 'remove') {
           if (!confirm(`Remove robot ${rid}?`)) return;
           this.ws.request({ type: 'robot_remove', robot_id: rid });
-        } else if (act === 'launch' || act === 'stop') {
+        } else if (act === 'launch' || act === 'stop' || act === 'restart') {
           btn.disabled = true;
+          const labels = { launch: '启动', stop: '停止', restart: '重启' };
+          if (window.dbg) window.dbg(`→ ${labels[act] || act} ${rid}... (等待pipeline就绪)`, 'send');
+          // Show immediate feedback — the SSH call takes ~30s to return.
+          this._toast({ ok: true, message: `${labels[act] || act}中... (约30s)` });
           this.ws.request({ type: 'robot_command', robot_id: rid, action: act })
-            .then(r => { btn.disabled = false; this._toast(r); });
+            .then(r => { btn.disabled = false; this._toast(r); })
+            .catch(() => { btn.disabled = false; });
         } else if (act === 'toggle_explore') {
           // Toggle auto-explore state (visual + backend property).
           const on = !(this._exploreMode[rid] === true);
@@ -138,6 +176,7 @@ export class RobotPanel {
     }
     const controls = `<div class="robot-ssh">
          <button class="ssh-btn launch" data-robot="${esc(r.robot_id)}" data-action="launch" ${dis} title="SSH 拉起 FAST-LIO + 录制 + 桥接全套">${icon('play', 12)} 启动</button>
+         <button class="ssh-btn restart" data-robot="${esc(r.robot_id)}" data-action="restart" ${dis} title="先清理（cleanup）再重新启动 pipeline">${icon('refresh', 12)} 重启</button>
          <button class="ssh-btn explore-btn ${exploreOn ? 'active' : ''}" data-robot="${esc(r.robot_id)}" data-action="toggle_explore" ${dis} title="${exploreOn ? '自动探索中（点击关闭）' : '开启自动探索'}">${icon('refresh', 12)} ${exploreOn ? '◉ 探索' : '探索'}</button>
          ${takeoverBtn}
          <button class="ssh-btn estop-btn" data-robot="${esc(r.robot_id)}" data-action="estop" ${dis} title="紧急停止：停运动+趴下">${icon('estop', 12)} 急停</button>
@@ -237,14 +276,17 @@ export class RobotPanel {
             return;
           }
           // Poll backend every 500ms to check if channel is ready.
-          // Timeout after ~20s — if the robot-side process crashes at startup
-          // (e.g. m3v_agibot.py SyntaxError, SDK can't init), bail out so the
-          // user sees an error instead of an infinite spinner.
+          // Timeout after ~30s — the C++ m3v_agibot waits for checkConnect()
+          // internally (up to 6s) + we pkill stale processes first (~1s) +
+          // init_wait, so allow generous time. If it still hasn't come up,
+          // tell the backend to clean up so we don't leak a zombie process.
           const startedAt = Date.now();
           const poll = () => {
             if (this._takeoverLoading !== rid) return;  // cancelled
-            if (Date.now() - startedAt > 20000) {
-              if (window.dbg) window.dbg(`takeover ${rid} TIMEOUT — channel never came up (check robot-side script)`, 'err');
+            if (Date.now() - startedAt > 30000) {
+              if (window.dbg) window.dbg(`takeover ${rid} TIMEOUT — channel never came up (cleaning up)`, 'err');
+              // Tell backend to close the channel + kill the robot-side process.
+              this.ws.send({ type: 'robot_command', robot_id: rid, action: 'takeover_end' });
               this._takeover = null;
               this._takeoverLoading = null;
               this._renderList();
@@ -265,7 +307,7 @@ export class RobotPanel {
                 }
               });
           };
-          setTimeout(poll, 1000);  // first poll after 1s
+          setTimeout(poll, 1500);  // first poll after 1.5s (give checkConnect time)
         });
     }
     this._renderList();
@@ -324,6 +366,18 @@ export class RobotPanel {
   }
 
   _toast(r) {
+    // Show the backend's message field if present (e.g. "pipeline started
+    // (5 ok, 1 warn)"), otherwise fall back to ok/error.
+    const ok = r && r.ok !== false;
+    const text = ok
+      ? (r.message || '✓ ok')
+      : `✗ ${r && r.error || 'failed'}`;
+    // Debug console feedback so the user sees what happened.
+    if (window.dbg) {
+      window.dbg(ok ? `✓ ${text}` : `✗ ${text}`, ok ? 'ok' : 'err');
+      // Also dump raw output for launch/stop/restart (helps debug pipeline issues).
+      if (r && r.output) window.dbg(`  output: ${String(r.output).slice(0, 200)}`, 'info');
+    }
     // Minimal transient status line at the form's top.
     const el = this.root.querySelector('.form-grid');
     if (!el) return;
@@ -333,10 +387,10 @@ export class RobotPanel {
       t.className = 'toast';
       el.prepend(t);
     }
-    t.textContent = r && r.ok ? '✓ ok' : `✗ ${r && r.error || 'failed'}`;
-    t.className = 'toast ' + (r && r.ok ? 'ok' : 'err');
+    t.textContent = text;
+    t.className = 'toast ' + (ok ? 'ok' : 'err');
     clearTimeout(this._toastT);
-    this._toastT = setTimeout(() => { if (t) t.remove(); }, 2500);
+    this._toastT = setTimeout(() => { if (t) t.remove(); }, 4000);
   }
 }
 

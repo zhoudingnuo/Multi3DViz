@@ -11,7 +11,11 @@ log_level: INFO
 
 recorder:
   enabled: true
-  ros: ros2                 # ros2 (native) | ros1 (noetic container)
+  # ROS1: FAST-LIO runs inside the neotic-fastlio container (rospy). The
+  # recorder runs in the same container (started by pipeline.sh) so it shares
+  # the roscore on host loopback. The host-side execute agent (mc_sdk) reads
+  # pose back from the odom_stream.jsonl this writes (split deployment).
+  ros: ros1
   cloud_topic: /cloud_registered
   odom_topic: /Odometry
   imu_topic: /livox/imu

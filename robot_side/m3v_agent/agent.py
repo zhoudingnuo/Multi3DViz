@@ -76,7 +76,20 @@ class RobotAgent:
         # Executor path.
         if mode in ("execute", "both") and self.cfg.executor.enabled:
             self.driver = make_driver(self.cfg.driver.kind, self.cfg.driver, self.recorder)
-            self.driver.recorder = self.recorder  # so get_pose() works
+            self.driver.recorder = self.recorder  # so get_pose() works (same-process mode)
+            # Split-process fallback: when there is no local recorder (execute
+            # mode), tail the odom_stream.jsonl the recorder writes on the
+            # shared filesystem. This bridges pose across the container/host
+            # boundary for the Agibot ROS1 split deployment.
+            if self.recorder is None:
+                odom_path = self._resolve_odom_file()
+                if odom_path:
+                    from .executor.odom_file_pose import OdomFilePoseProvider
+                    self.driver.odom_file_pose = OdomFilePoseProvider(odom_path)
+                    log.info("execute mode: pose from %s", odom_path)
+                else:
+                    log.warning("execute mode: no odom_stream.jsonl found yet — "
+                                "driver will have no pose until the recorder creates it")
             ok = False
             try:
                 ok = self.driver.connect()
@@ -102,6 +115,20 @@ class RobotAgent:
             )
             self.web.start()
         log.info("agent ready")
+
+    def _resolve_odom_file(self) -> str:
+        """Find the latest run dir's odom_stream.jsonl for the file-pose fallback.
+
+        Returns the path to <data_root>/<robot>/data/run_<ts>/Odometry/odom_stream.jsonl,
+        picking the newest run dir, or "" if none exists yet (the recorder
+        hasn't started / written its first frame)."""
+        import glob
+        rc = self.cfg.recorder
+        base = os.path.join(rc.data_root, rc.robot, "data")
+        runs = sorted(glob.glob(os.path.join(base, "run_*")))
+        if not runs:
+            return ""
+        return os.path.join(runs[-1], "Odometry", "odom_stream.jsonl")
 
     # --- status snapshot (read by the web panel via GET /api/state) ---
     def snapshot(self) -> dict:

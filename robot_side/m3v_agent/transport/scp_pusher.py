@@ -46,7 +46,8 @@ class ScpPusher:
         self._thread = None
         self._client = None          # paramiko.SSHClient
         self._sftp = None            # paramiko.SFTPClient
-        self._last_idx = 0           # next frame index to upload
+        self._last_idx = 0           # next frame index to upload (when NOT deleting)
+        self._uploaded = set()       # basenames already uploaded (when deleting)
         self._remote_root = cfg.remote_root
         self._pushed_gravity = False
         # Convert Windows-style backslash remote root to forward slashes (SFTP
@@ -113,14 +114,27 @@ class ScpPusher:
 
     # --- remote path helpers ---
     def _remote_mkdirs(self, remote_path: str):
-        """mkdir -p on the remote (SFTP has no recursive mkdir)."""
+        """mkdir -p on the remote (SFTP has no recursive mkdir).
+
+        Handles both POSIX absolute paths (/home/foo) and Windows drive paths
+        (C:/Users/foo). For Windows drive paths we must NOT prefix with '.'
+        (./C:/... is a bogus relative path); instead we seed `cur` with the
+        drive letter (e.g. 'C:') and build from there."""
         if not remote_path or remote_path in ("/", ".", ""):
             return
-        parts = remote_path.split("/")
-        cur = "" if remote_path.startswith("/") else "."
+        parts = [p for p in remote_path.split("/") if p]
+        # Determine the seed: '/foo' → '' (then first part becomes absolute);
+        # 'C:/...' → start from 'C:'; relative 'foo/...' → start from '.'.
+        cur = ""
+        if remote_path.startswith("/"):
+            cur = ""
+        elif parts and len(parts[0]) == 2 and parts[0][1] == ":":
+            # Windows drive letter like 'C:' — seed with it, don't prefix '.'.
+            cur = parts[0]
+            parts = parts[1:]
+        else:
+            cur = "."
         for p in parts:
-            if not p:
-                continue
             cur = cur + "/" + p if cur else p
             try:
                 self._sftp.stat(cur)  # raises if missing
@@ -184,10 +198,13 @@ class ScpPusher:
             self._stop.wait(self.cfg.interval)
 
     def _push_cycle(self, run_dir: str):
-        """One upload pass: new frames + odom + gravity."""
+        """One upload pass. LOW-LATENCY MODE: only upload the LATEST frame +
+        latest odom, then delete all older frames locally. This prevents
+        backlog when the network is slower than the 10Hz recording rate —
+        instead of falling further behind uploading every frame in order, we
+        skip to the newest and discard the backlog."""
         robot = self.recorder.cfg.robot
         cloud_local = os.path.join(run_dir, "cloud_registered")
-        # Mirror: <remote_root>/<robot>/data/<run_name>/cloud_registered/...
         run_name = os.path.basename(run_dir)
         remote_run = f"{self._remote_root}/{robot}/data/{run_name}"
         remote_cloud = f"{remote_run}/cloud_registered"
@@ -195,30 +212,48 @@ class ScpPusher:
         self._remote_mkdirs(remote_cloud)
         self._remote_mkdirs(remote_odom_dir)
 
-        # 1. Push any new .npy frames.
+        # 1. Upload ONLY the latest .npy frame. Delete all others (backlog).
         files = sorted(_glob.glob(os.path.join(cloud_local, "*.npy")))
-        new = 0
-        for f in files[self._last_idx:]:
-            # Skip temp files from atomic writes still in flight.
-            if f.endswith(".tmp") or ".m3vtmp" in f:
-                continue
-            remote_path = f"{remote_cloud}/{os.path.basename(f)}"
+        # Filter out temp files from atomic writes.
+        files = [f for f in files if not f.endswith(".tmp") and ".m3vtmp" not in f]
+        if files:
+            latest = files[-1]
+            base = os.path.basename(latest)
+            remote_path = f"{remote_cloud}/{base}"
             try:
-                self._remote_put_atomic(f, remote_path)
-                new += 1
+                self._remote_put_atomic(latest, remote_path)
+                # Delete ALL local frames (including the one we just uploaded)
+                # so the next cycle only sees frames that arrived after this one.
+                for f in files:
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+                self._uploaded.add(base)
+                log.info("pushed latest frame %s (purged %d backlog)", base, len(files))
             except Exception as e:
-                log.warning("upload %s failed: %s", os.path.basename(f), e)
-                break  # stop this cycle; retry next time so order is preserved
-        if new:
-            self._last_idx += new
-            log.info("pushed %d frames (total uploaded: %d)", new, self._last_idx)
+                log.warning("upload latest %s failed: %s", base, e)
 
-        # 2. Re-upload odom_stream.jsonl (small append-only file).
+        # 2. Upload only the LAST line of odom_stream.jsonl (latest pose).
+        #    The control side's OdomFilePoseProvider tails this file, so we
+        #    rewrite it to contain just the latest pose — keeps it tiny and
+        #    the host never reads stale history.
         odom_local = os.path.join(run_dir, "Odometry", "odom_stream.jsonl")
         if os.path.exists(odom_local):
             remote_odom = f"{remote_odom_dir}/odom_stream.jsonl"
             try:
-                self._remote_put_atomic(odom_local, remote_odom)
+                # Read all lines, keep only the last one, upload that.
+                with open(odom_local, "r", encoding="utf-8") as fh:
+                    lines = fh.readlines()
+                if lines:
+                    last_line = lines[-1]
+                    # Upload the last line as the full remote file.
+                    import io as _io
+                    self._sftp.putfo(_io.BytesIO(last_line.encode("utf-8")), remote_odom)
+                    # Truncate the local odom file to just the last line too
+                    # (prevents it from growing unbounded).
+                    with open(odom_local, "w", encoding="utf-8") as fh:
+                        fh.write(last_line)
             except Exception as e:
                 log.warning("odom upload failed: %s", e)
 

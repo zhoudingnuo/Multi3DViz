@@ -61,6 +61,12 @@ class TransportCfg:
     interval: float = 1.0
     # Use atomic rename on the remote (needs OpenSSH >= 8.0 for posix-rename).
     atomic_remote: bool = True
+    # Delete local .npy frames after they are confirmed uploaded. This keeps
+    # the robot's disk from filling up during long recording sessions (each
+    # frame is ~70KB at 10Hz = ~7MB/min = ~400MB/hour). The odom_stream.jsonl
+    # is kept (it's tiny + the host-side execute agent reads pose from it).
+    # The gravity file is also kept (uploaded once, needed for reloads).
+    delete_after_push: bool = True
 
 
 @dataclass

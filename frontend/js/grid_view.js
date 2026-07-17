@@ -19,10 +19,14 @@ export class GridView {
     this.ctx = canvas.getContext('2d');
     this.onPick = onPick || (() => {});
     // Current grid data
-    this.cells = null;        // Int8Array (h*w) base occupancy
+    this.cells = null;        // Int8Array (h*w) base occupancy (active view)
     this.w = 0; this.h = 0;
     this.origin = [0, 0];     // world meters
     this.res = 0.05;          // meters/cell
+    // Multi-source base grids: { merged: {cells,w,h,origin,res}, robot_a: {...}, robot_b: {...} }
+    this.grids = {};
+    // Active view: 'auto' (auto-select by priority) | 'merged' | 'robot_a' | 'robot_b'
+    this.activeView = 'auto';
     // Optional overlay grid (explorer coverage/frontier). Same encoding +
     // 1=explored(green tint), 2=frontier(yellow). Aligned by its own origin.
     this.ovCells = null; this.ovW = 0; this.ovH = 0;
@@ -42,15 +46,73 @@ export class GridView {
     this.resize();
   }
 
-  // Receive a decoded grid2d op for the BASE occupancy grid.
+  // Receive a decoded grid2d op for a BASE occupancy grid. Routes by op.id:
+  //   'merged_grid2d' → merged view, 'robot_a_grid2d' → A, 'robot_b_grid2d' → B
+  // Stores all sources separately, then applies the active view (auto or manual).
   setGrid(op) {
-    this.cells = op.cells;
-    this.w = op.width;
-    this.h = op.height;
-    this.origin = op.origin;
-    this.res = op.resolution;
-    this._computeFit();
+    // Map op.id → source key. 'merged_grid2d' → 'merged'; '{rid}_grid2d' → rid.
+    let key = null;
+    if (op.id === 'merged_grid2d') key = 'merged';
+    else if (op.id && op.id.endsWith('_grid2d')) key = op.id.replace('_grid2d', '');
+    if (!key) return;
+    const prev = this.grids[key];
+    this.grids[key] = {
+      cells: op.cells, w: op.width, h: op.height,
+      origin: op.origin, res: op.resolution,
+    };
+    // In auto mode, re-evaluate the view whenever a NEW source first arrives
+    // (prev was undefined) so we switch to it by priority.
+    if (this.activeView === 'auto' && !prev) {
+      this._autoSelect();
+    }
+    this._applyActiveView();
     this.draw();
+  }
+
+  // Select the view by auto-priority: merged > robot_a > robot_b.
+  // Only switches UP in priority (merged wins) — doesn't downgrade once chosen
+  // unless the source vanishes (handled by absence on next auto re-eval).
+  _autoSelect() {
+    if (this.grids.merged) { this._setActive('merged'); return; }
+    if (this.grids.robot_a) { this._setActive('robot_a'); return; }
+    if (this.grids.robot_b) { this._setActive('robot_b'); return; }
+  }
+
+  // Set activeView + update button highlight (if callback provided).
+  _setActive(view) {
+    if (this.activeView === view) return;
+    this.activeView = view;
+    if (this.onViewChange) this.onViewChange(view);
+  }
+
+  // Manual view selection via the toggle buttons. 'auto' re-enables auto-select.
+  setView(view) {
+    this.activeView = view;
+    if (view === 'auto') this._autoSelect();
+    this._applyActiveView();
+    if (this.onViewChange) this.onViewChange(this.activeView);
+    this.draw();
+  }
+
+  // Copy the active view's grid data into the render fields (this.cells etc.).
+  _applyActiveView() {
+    const view = this.activeView === 'auto'
+      ? (this.grids.merged ? 'merged' : this.grids.robot_a ? 'robot_a' : this.grids.robot_b ? 'robot_b' : null)
+      : this.activeView;
+    const g = view ? this.grids[view] : null;
+    if (g) {
+      this.cells = g.cells; this.w = g.w; this.h = g.h;
+      this.origin = g.origin; this.res = g.res;
+      this._computeFit();
+    } else {
+      // Selected view has no data yet — clear the grid so the user sees the
+      // switch (instead of the previous view lingering). The draw() method
+      // shows "waiting for grid data..." when this.cells is null.
+      this.cells = null;
+      // Also clear the overlay so stale coverage/frontier from another view
+      // doesn't bleed through.
+      this.ovCells = null;
+    }
   }
 
   // Receive the explorer overlay grid2d op. Rendered on top of the base grid.

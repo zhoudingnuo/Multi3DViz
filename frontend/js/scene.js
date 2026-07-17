@@ -19,7 +19,11 @@ export class SceneManager {
     this.scene.background = new THREE.Color(0x181818);
 
     // Camera — orthographic-ish perspective, Z up to match ccenter's map frame.
-    this.camera = new THREE.PerspectiveCamera(55, 1, 0.005, 500);
+    // NOTE: near must stay reasonably large. A tiny near (e.g. 0.005) crushes
+    // depth-buffer precision (near/far ratio ~100k:1) and lets the camera dolly
+    // so close that points balloon into full-screen color blocks at certain
+    // angles — the "giant color block from some viewpoints" bug.
+    this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 1000);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(8, -8, 6);
 
@@ -33,6 +37,10 @@ export class SceneManager {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
     this.controls.target.set(0, 0, 0);
+    // Keep the camera from dollying so close that points (sizeAttenuation)
+    // balloon into full-screen blocks, or so far that depth precision collapses.
+    this.controls.minDistance = 0.3;
+    this.controls.maxDistance = 200;
 
     // Ground grid + axes for orientation (matches ccenter's create_grid).
     this._addReferenceGrid();
@@ -217,8 +225,12 @@ export class SceneManager {
     const dist = r / Math.tan((this.camera.fov * Math.PI / 180) / 2) * 1.2;
     const dir = new THREE.Vector3(1, -1, 0.7).normalize();
     this.camera.position.copy(sphere.center.clone().add(dir.multiplyScalar(dist)));
-    this.camera.near = Math.max(0.005, dist / 1000);
-    this.camera.far = Math.max(500, dist * 10);
+    // Tie near/far to the actual data extent instead of a fixed tiny near and a
+    // forced far=500. The previous near=dist/1000 + far=max(500,...) gave a
+    // near/far ratio of ~50k:1, which exhausted depth precision and made the
+    // cloud render as a solid wall/block at certain viewing angles.
+    this.camera.near = Math.max(0.1, (dist - r) * 0.2);
+    this.camera.far = Math.max(500, (dist + r) * 6);
     this.camera.updateProjectionMatrix();
     this._framed = true;
   }

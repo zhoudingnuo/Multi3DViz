@@ -23,7 +23,13 @@ import logging
 
 log = logging.getLogger("multi3dviz.config")
 
-SAVE_DEBOUNCE_S = 1.0   # flush at most once per second
+SAVE_DEBOUNCE_S = 0.2   # flush at most ~5x/sec. The config file is small
+                        # (<2KB) and writes are atomic (os.replace), so a short
+                        # window is cheap and minimises state loss when the app
+                        # is hard-killed (Windows TerminateProcess skips the
+                        # exit-time force_save). 1.0s previously risked losing
+                        # a just-set stream_mode toggle if the user quit within
+                        # that second.
 
 
 class ConfigStore:

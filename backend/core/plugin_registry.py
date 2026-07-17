@@ -156,6 +156,12 @@ class PluginRegistry:
             # each have to thread it through their __init__/super().__init__.
             # The base __init__ already defaulted it to self.name.
             inst.instance_id = iid
+            # Re-load persisted props now that instance_id is the real one
+            # ("Name#N"). __init__ loaded against the default name, which
+            # missed per-instance saved state (e.g. stream_mode on
+            # LocalReplay#1 vs #2). This makes multi-instance property
+            # persistence actually work.
+            inst._load_persisted_props()
             inst.on_enable()
         except Exception as e:
             log.exception("enable %r failed: %s", iid, e)
@@ -205,17 +211,30 @@ class PluginRegistry:
 
     # --- tick: advance all live Display/Service plugins ---
     def tick(self, dt: float) -> list[SceneUpdate]:
+        import time as _t
         updates = []
+        slow = []
         for iid, inst in list(self._instances.items()):
             if inst.category == "tool":
                 continue
+            _s = _t.monotonic()
             try:
                 upd = inst.update(dt)
             except Exception as e:
                 log.exception("plugin %s update() failed: %s", iid, e)
                 continue
+            _ms = (_t.monotonic() - _s) * 1000
+            # Track any plugin taking >50ms so the caller can log which one
+            # is responsible for tick stalls.
+            if _ms > 50:
+                slow.append((iid, _ms))
             if upd is not None:
                 updates.append(upd)
+        if slow:
+            # Log the slowest plugin so it's obvious what's stalling.
+            slow.sort(key=lambda x: -x[1])
+            parts = ", ".join(f"{iid}={ms:.0f}ms" for iid, ms in slow[:3])
+            log.warning("slow plugins in tick: %s", parts)
         return updates
 
     def enabled_list(self) -> list[dict]:

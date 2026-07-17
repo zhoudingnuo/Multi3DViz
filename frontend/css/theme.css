@@ -195,6 +195,20 @@ html, body {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 2px 0;
 }
+#grid-view-toggle {
+  display: flex; gap: 0; margin-right: 6px;
+  border: 1px solid var(--border-soft); border-radius: var(--radius-sm); overflow: hidden;
+}
+#grid-view-toggle .view-btn {
+  background: var(--bg-elev-2); color: var(--text-dim);
+  border: none; padding: 3px 9px; font-size: 11px; cursor: pointer;
+  border-right: 1px solid var(--border-soft); transition: all 0.12s;
+}
+#grid-view-toggle .view-btn:last-child { border-right: none; }
+#grid-view-toggle .view-btn:hover { background: var(--bg-elev-3); color: var(--text-value); }
+#grid-view-toggle .view-btn.active {
+  background: rgba(78,201,176,0.18); color: var(--accent); font-weight: 600;
+}
 #gridmap-controls .sem-trigger {
   padding: 4px 8px; font-size: 11px;
   border-color: var(--accent-dim);
@@ -211,12 +225,41 @@ html, body {
 }
 #gridmap-controls input[type="number"]:focus { border-color: var(--accent); }
 #gridmap-controls .mode-toggle { font-size: 11px; }
+#explore-status {
+  margin-top: 4px; padding: 4px 6px;
+  background: var(--bg-elev-2); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); font-size: 10px;
+  font-family: var(--font-mono);
+}
+#explore-status .es-row { padding: 0; }
+#explore-status .es-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 1px 0;
+}
+#explore-status .es-label { color: var(--text-dim); }
+#explore-status b { color: var(--text-value); font-weight: 600; }
+#explore-status .es-actions {
+  display: flex; gap: 6px; margin-bottom: 4px;
+}
+#explore-status .es-step-btn {
+  flex: 1; padding: 5px 8px; font-size: 12px; font-weight: 600;
+  border-color: var(--accent-dim); color: var(--accent);
+}
+#explore-status .es-step-btn:hover:not(:disabled) {
+  background: rgba(78,201,176,0.15); border-color: var(--accent);
+}
+#explore-status .es-step-btn:disabled { opacity: 0.35; }
+#explore-status .es-stop-btn {
+  padding: 5px 10px; font-size: 11px;
+  border-color: #6e4a3a; color: #e07050;
+}
 #gridmap-wrap {
   position: relative;
   background: var(--bg-inset);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
   aspect-ratio: 1 / 1;          /* square — gridmaps are square (1200x1200) */
+  max-height: 45vh;             /* don't let the canvas squeeze the status bar */
   overflow: hidden;
 }
 #gridmap-wrap canvas { display: block; width: 100%; height: 100%; }
@@ -235,9 +278,9 @@ html, body {
   grid-area: statusbar;
   background: var(--bg-elev-1);
   border-top: 1px solid var(--border);
-  display: flex; align-items: center; gap: 18px;
-  padding: 0 14px;
-  font-family: var(--font-mono); font-size: 11px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 10px;
+  font-family: var(--font-mono); font-size: 10px;
   color: var(--text-muted);
 }
 
@@ -433,7 +476,7 @@ html, body {
 .reg-metrics b { color: var(--text-value); font-weight: 500; }
 .reg-detail { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted);
   line-height: 1.4; word-break: break-word; }
-#statusbar .item { display: flex; gap: 5px; }
+#statusbar .item { display: flex; gap: 3px; white-space: nowrap; }
 #statusbar .item b { color: var(--text-value); font-weight: 500; }
 
 /* === Debug panel (floating bottom-right) === */

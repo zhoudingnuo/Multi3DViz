@@ -29,6 +29,12 @@ class BaseDriver(ABC):
 
     # The recorder that supplies pose data. Set by RobotAgent after both are built.
     recorder = None
+    # File-backed pose provider (OdomFilePoseProvider). Used as a fallback when
+    # `recorder` is None — i.e. split-process deployment where the recorder
+    # (rospy, in a noetic container) and the driver (host) run separately. The
+    # provider tails the odom_stream.jsonl the recorder writes. Set by RobotAgent
+    # when running in execute mode without a local recorder.
+    odom_file_pose = None
 
     # --- lifecycle ---
     @abstractmethod
@@ -67,16 +73,23 @@ class BaseDriver(ABC):
     def get_pose(self) -> Optional[tuple]:
         """Return (x, y, yaw) in the robot odom frame, or None if no odom yet.
 
-        Reading from the recorder's odom cache keeps both drivers consistent —
-        the Agibot SDK's getRPY works but ctrlmode is unreliable, and Unitree's
-        DDS state needs separate subscription plumbing. Odom is already being
-        recorded and is the authoritative navigation reference."""
-        if self.recorder is None:
-            return None
-        pose = self.recorder.latest_pose()
-        if not pose:
-            return None
-        return (pose.get("x", 0.0), pose.get("y", 0.0), pose.get("yaw", 0.0))
+        Pose is read from the recorder's odom cache (same-process 'both' mode),
+        keeping both drivers consistent — the Agibot SDK's getRPY works but
+        ctrlmode is unreliable, and Unitree's DDS state needs extra plumbing.
+        Odom is already being recorded and is the authoritative navigation
+        reference.
+
+        In split-process deployment (Agibot ROS1: recorder in a container,
+        driver on the host) there is no recorder object; we fall back to
+        OdomFilePoseProvider, which tails the odom_stream.jsonl the recorder
+        writes to the shared filesystem."""
+        if self.recorder is not None:
+            pose = self.recorder.latest_pose()
+            if pose:
+                return (pose.get("x", 0.0), pose.get("y", 0.0), pose.get("yaw", 0.0))
+        if self.odom_file_pose is not None:
+            return self.odom_file_pose.latest_pose()
+        return None
 
     # --- helpers shared by subclasses ---
     @staticmethod

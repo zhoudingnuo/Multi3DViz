@@ -81,7 +81,7 @@ class LocalReplaySource(DataSourcePlugin):
         },
         "instant_load": {
             "type": "bool",
-            "default": True,
+            "default": False,
             "label": "Instant load (skip to last frame, no playback)",
             "group": "Mode",
         },
@@ -94,7 +94,7 @@ class LocalReplaySource(DataSourcePlugin):
         },
         "stream_mode": {
             "type": "bool",
-            "default": False,
+            "default": True,
             "label": "Live stream (poll new frames as they're written)",
             "group": "Mode",
         },
@@ -118,6 +118,12 @@ class LocalReplaySource(DataSourcePlugin):
         self._stream_known = 0     # frames already consumed from disk
         self._stream_known_odom = 0
         self._stream_R = None      # gravity rotation (loaded once)
+        # Incremental voxel accumulator for stream mode: holds the globally
+        # downsampled cloud, grown by merging each new (downsampled) frame.
+        # Bounded by periodic re-downsample — never vstacks ALL raw history.
+        self._stream_accum_pts = np.empty((0, 3), dtype=np.float32)
+        self._stream_accum_cols = np.empty((0, 3), dtype=np.float32)
+        self._stream_last_mtime = 0.0  # mtime of last processed latest.npy
         # When the user seeks, we must force a re-push even if the new frame
         # index is <= _last_pushed (normal tick path skips in that case).
         self._seek_to = None       # int frame to jump to, or None
@@ -173,7 +179,26 @@ class LocalReplaySource(DataSourcePlugin):
             # Cancel any in-progress batch load — the background thread checks
             # this flag and bails out if the mode switched mid-load.
             self._loading = False
-            log.info("mode switch: %s=%s → full state reset, batch load cancelled", key, value)
+            # Publish an EMPTY frame so the previous mode's cloud is cleared
+            # from the frontend immediately. Without this, the last batch cloud
+            # stays on screen until the new mode produces data — in stream mode
+            # against a stale recording that NEVER happens (freshness gate), so
+            # the old batch cloud would linger forever, looking like stream fell
+            # back to batch. frame_idx=0 differs from any prior published idx,
+            # so PointCloud's dedup check lets the empty frame through and emits
+            # a remove op (point_cloud.py handles len(pos)==0 → remove).
+            rid = self.get("robot_id", "robot_a")
+            self.ctx.data.publish(rid, {
+                "robot_id": rid,
+                "frame_idx": 0,
+                "max_frame": 0,
+                "positions": np.empty((0, 3), dtype=np.float32),
+                "colors": np.empty((0, 3), dtype=np.float32),
+                "odom": None,
+                "all_odom": [],
+            })
+            log.info("mode switch: %s=%s → full state reset, batch load cancelled, cloud cleared",
+                     key, value)
         # Re-load only when data-source identity changes.
         if key in ("data_root", "robot"):
             if self.get("stream_mode", False):
@@ -217,7 +242,7 @@ class LocalReplaySource(DataSourcePlugin):
                 if not frames:
                     log.warning("no cloud_registered frames in %s", latest)
                     return
-                _, R = data_utils.load_gravity(os.path.dirname(latest))
+                _, R = data_utils.load_gravity(latest)
                 frames = [(R @ f.T).T for f in frames]
                 # GLOBAL voxel downsample over ALL frames at once (cross-frame
                 # overlap collapses to one point per cell). With instant_load
@@ -349,16 +374,21 @@ class LocalReplaySource(DataSourcePlugin):
         return None
 
     def _update_stream(self, dt: float):
-        """Stream mode: incrementally poll NEW frames from the latest run dir
-        each tick (non-blocking) and append them. Supports a robot actively
-        recording — frames appear as the recorder flushes them to disk.
+        """Stream mode — SINGLE-FILE polling.
 
-        FRESHNESS CHECK: if the latest .npy frame is older than 5 minutes,
-        the robot is NOT actively recording — fall back to batch/instant_load
-        so the user sees the full historical cloud instead of waiting for
-        data that isn't coming."""
-        # Resolve the run dir once (re-resolve every ~2s in case a new run
-        # directory appears when the robot starts a fresh session).
+        The robot-side recorder (go2_record.py) operates in overwrite mode:
+          - cloud_registered/latest.npy  ← always the newest frame (overwritten)
+          - Odometry/odom_stream.jsonl   ← always the latest odom line (truncated)
+
+        This function checks latest.npy's mtime each tick (one os.stat call).
+        When it changes, we load the new frame, downsample it, and merge into
+        the display accumulator. Old frames are NOT kept on disk — no listdir,
+        no sort, no file-count tracking. O(N_new) per tick, constant regardless
+        of how long the robot has been recording.
+
+        The accumulator is periodically re-downsampled (voxel grid) so duplicate
+        points from overlapping scans merge — bounded memory, no visual loss."""
+        # ---- resolve run dir (throttled every ~2s) ----
         self._retry_t += dt
         if self._loaded_root is None or self._retry_t >= 2.0:
             self._retry_t = 0.0
@@ -366,88 +396,173 @@ class LocalReplaySource(DataSourcePlugin):
             if latest is None:
                 return None
             if latest != self._loaded_root:
-                # New/different run dir — reset stream state.
                 self._loaded_root = latest
-                self._stream_known = 0
-                self._stream_known_odom = 0
-                self._frames = []
-                self._vis_pts = []
-                self._vis_cum = [0]
+                self._stream_accum_pts = np.empty((0, 3), dtype=np.float32)
+                self._stream_accum_cols = np.empty((0, 3), dtype=np.float32)
                 self._odom = []
                 self._n = 0
                 self._stream_dedup_t = 0.0
-                self._cached_pub_frame = -1
+                # ONLINE-MODE SEMANTICS: initialize last_mtime to the CURRENT
+                # mtime of latest.npy so we DON'T load the stale file already
+                # on disk. Only frames written AFTER we start watching get
+                # loaded. Without this, _stream_last_mtime=0.0 makes every old
+                # file look "new" → history leaks into the live stream.
+                _init_npy = os.path.join(latest, "cloud_registered", "latest.npy")
+                try:
+                    self._stream_last_mtime = os.path.getmtime(_init_npy)
+                    self._stream_last_size = os.path.getsize(_init_npy)
+                except OSError:
+                    self._stream_last_mtime = 0.0
+                    self._stream_last_size = 0
                 self._cached_pub_pts = None
+                self._cached_pub_cols = None
                 # Gravity correction loaded once per run.
                 try:
-                    _, self._stream_R = data_utils.load_gravity(
-                        os.path.dirname(latest))
+                    _, self._stream_R = data_utils.load_gravity(latest)
                 except Exception:
                     self._stream_R = np.eye(3)
+                log.info("stream: watching %s (skipping existing file)", latest)
         if self._loaded_root is None:
             return None
-        # FRESHNESS CHECK: if the latest .npy in this run dir is older than 5
-        # FRESHNESS CHECK: if the latest .npy is > 5 min old, the robot is
-        # NOT actively recording. Stay in stream mode but don't load stale
-        # history — just wait for new data. Do NOT auto-switch to batch (that
-        # would override the user's explicit choice and load history).
-        cloud_dir = os.path.join(self._loaded_root, "cloud_registered")
-        npys = sorted(glob.glob(os.path.join(cloud_dir, "*.npy")))
-        if npys:
-            age = time.time() - os.path.getmtime(npys[-1])
-            if age > 300:  # 5 minutes — stale
-                log.info("stream: latest frame %.0fs old — staying in stream, waiting for new data", age)
-                return None  # don't load, just wait
-        # Ensure stream accumulators exist (may be None if a batch _reload
-        # raced and reset them).
-        if self._frames is None:
-            self._frames = []
-            self._vis_pts = []
-            self._vis_cum = [0]
+        # Ensure accumulators exist (may be None if a batch _reload raced).
+        if self._stream_accum_pts is None:
+            self._stream_accum_pts = np.empty((0, 3), dtype=np.float32)
+            self._stream_accum_cols = np.empty((0, 3), dtype=np.float32)
             self._odom = []
-            self._stream_known = 0
-            self._stream_known_odom = 0
-        # Poll for new frames (non-blocking — returns [] if none ready).
-        voxel = float(self.get("voxel_size", 0.1))
-        new_frames, self._stream_known = player.poll_new_frames_nonblocking(
-            self._loaded_root, self._stream_known)
-        new_odom, self._stream_known_odom = player.poll_new_odometry(
-            self._loaded_root, self._stream_known_odom)
-        if not new_frames:
-            return None  # nothing new this tick
-        R = self._stream_R if self._stream_R is not None else np.eye(3)
-        for f in new_frames:
-            gf = (R @ f.T).T
-            self._frames.append(gf)
-            self._vis_pts.append(gf)  # raw gravity-corrected (global dedup at _publish)
-            self._vis_cum.append(self._vis_cum[-1] + len(gf))
-        self._odom.extend(new_odom)
-        self._n = len(self._frames)
+            self._n = 0
+            self._stream_last_mtime = 0.0
         rid = self.get("robot_id", "robot_a")
+        # ---- check latest.npy mtime (ONE os.stat — no listdir/glob) ----
+        latest_npy = os.path.join(self._loaded_root, "cloud_registered", "latest.npy")
+        try:
+            mtime = os.path.getmtime(latest_npy)
+            msize = os.path.getsize(latest_npy)
+        except OSError:
+            # File doesn't exist yet — pipeline may not have produced data.
+            new_odom = self._read_latest_odom()
+            if new_odom:
+                self._odom = new_odom
+            self._publish_stream_cached(rid)
+            return None
+        if not hasattr(self, '_stream_last_mtime'):
+            self._stream_last_mtime = 0.0
+            self._stream_last_size = 0
+        # Detect new frame: mtime changed OR size changed (SCP may overwrite
+        # within the same mtime second on Windows NTFS — 1s resolution).
+        is_new = (mtime != self._stream_last_mtime) or (msize != self._stream_last_size)
+        # Diagnostic: log every 2s what we see
+        self._stream_diag_t = getattr(self, '_stream_diag_t', 0.0) + dt
+        if self._stream_diag_t >= 2.0:
+            self._stream_diag_t = 0.0
+            log.info("stream %s: mtime=%.1f last=%.1f size=%d last_size=%d n=%d is_new=%s",
+                     rid, mtime, self._stream_last_mtime, msize, self._stream_last_size,
+                     self._n, is_new)
+        if not is_new:
+            # Same file as last tick — just refresh odom.
+            new_odom = self._read_latest_odom()
+            if new_odom:
+                self._odom = new_odom
+            self._publish_stream_cached(rid)
+            return None
+        # ---- NEW frame detected: load, downsample, merge into accumulator ----
+        import time as _stime
+        _t0 = _stime.monotonic()
+        try:
+            arr = player._try_load(latest_npy)
+        except Exception:
+            arr = None
+        if arr is None:
+            # File may be partially written (SCP in progress) — retry next tick.
+            # Update last_mtime so we don't keep hammering the same half-file.
+            self._stream_last_mtime = mtime
+            self._stream_last_size = msize
+            self._publish_stream_cached(rid)
+            return None
+        self._stream_last_mtime = mtime
+        self._stream_last_size = msize
+        voxel = float(self.get("voxel_size", 0.1))
+        R = self._stream_R if self._stream_R is not None else np.eye(3)
+        gf = (R @ arr.T).T  # gravity correction
+        # Downsample this single frame, then merge into accumulator.
+        if len(gf) > 1000:
+            gf_ds = data_utils.voxel_downsample(gf, voxel)
+        else:
+            gf_ds = gf.astype(np.float32)
+        self._stream_accum_pts = np.vstack([self._stream_accum_pts, gf_ds])
+        self._n += 1
         self._cursor = float(self._n)
-        # STREAM PERFORMANCE: throttle the expensive global re-downsample to
-        # every ~0.5s instead of every tick. The cloud keeps accumulating raw
-        # in _vis_pts, but _publish only re-downsamples when the throttle
-        # window elapses. Between re-downsamples, it publishes the last
-        # cached result — the cloud visibly grows in bursts every 0.5s rather
-        # than stalling the tick loop on every 10Hz frame arrival.
+        # Read fresh odom.
+        new_odom = self._read_latest_odom()
+        if new_odom:
+            self._odom = new_odom
+        # Re-downsample accumulator when it grows large (bounds memory +
+        # removes duplicate points from overlapping scans). Throttled ~0.5s.
         self._stream_dedup_t += dt
         if self._stream_dedup_t >= 0.5:
             self._stream_dedup_t = 0.0
-            self._publish(rid, self._n)
-        elif self._cached_pub_pts is not None:
-            # Between re-downsamples: publish the cached cloud with updated odom.
-            self.ctx.data.publish(rid, {
-                "robot_id": rid,
-                "frame_idx": self._n,
-                "max_frame": self._n,
-                "positions": self._cached_pub_pts,
-                "colors": self._cached_pub_cols,
-                "odom": self._odom[-1] if self._odom else None,
-                "all_odom": self._odom,
-            })
+            pts = self._stream_accum_pts
+            # Aggressively downsample to keep the published cloud small —
+            # large clouds (>100K pts = >2MB WS frame) slow the frontend
+            # renderer and clog the tick loop. 50K is plenty for display.
+            if len(pts) > 50000:
+                pts = data_utils.voxel_downsample(pts, voxel)
+                self._stream_accum_pts = pts
+            cols = data_utils.height_color_blue_red(pts).astype(np.float32)
+            self._stream_accum_pts, self._stream_accum_cols = cap_accum(pts, cols)
+        else:
+            pts = self._stream_accum_pts
+            cols = data_utils.height_color_blue_red(pts).astype(np.float32)
+            self._stream_accum_cols = cols
+        _ms = (_stime.monotonic() - _t0) * 1000
+        if _ms > 30:
+            log.warning("stream frame %d: %d pts, took %.0fms", self._n, len(pts), _ms)
+        self.ctx.data.publish(rid, {
+            "robot_id": rid,
+            "frame_idx": self._n,
+            "max_frame": self._n,
+            "positions": self._stream_accum_pts,
+            "colors": self._stream_accum_cols,
+            "odom": self._odom[-1] if self._odom else None,
+            "all_odom": self._odom,
+        })
         self._last_pushed = self._n
         return None
+
+    def _publish_stream_cached(self, rid):
+        """Publish the cached accumulator cloud with fresh odom — used when
+        no new frame arrived this tick but we still want to update the pose
+        marker and keep the cloud visible."""
+        if self._stream_accum_pts is None or len(self._stream_accum_pts) == 0:
+            return
+        self.ctx.data.publish(rid, {
+            "robot_id": rid,
+            "frame_idx": self._n,
+            "max_frame": self._n,
+            "positions": self._stream_accum_pts,
+            "colors": self._stream_accum_cols,
+            "odom": self._odom[-1] if self._odom else None,
+            "all_odom": self._odom,
+        })
+
+    def _read_latest_odom(self):
+        """Read odom_stream.jsonl. The SCP pusher rewrites this file to contain
+        only the latest line, so we just read the whole (tiny) file."""
+        if self._loaded_root is None:
+            return None
+        odom_path = os.path.join(self._loaded_root, "Odometry", "odom_stream.jsonl")
+        if not os.path.exists(odom_path):
+            return None
+        try:
+            import json as _json
+            out = []
+            with open(odom_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        out.append(_json.loads(line))
+            return out
+        except Exception:
+            return None
 
     def _publish(self, rid, f):
         """Publish accumulated points/colors up to frame f into the data bus.

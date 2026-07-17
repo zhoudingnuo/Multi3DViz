@@ -55,16 +55,29 @@ class PluginBase:
         # Initialize property values from schema defaults.
         for key, schema in self.properties.items():
             self._prop_values[key] = schema.get("default")
-        # Override with persisted values (user's last session) if a config
-        # store is wired. Unknown keys are ignored so a schema change across
-        # versions doesn't resurrect stale properties. Keyed by instance_id
-        # so two instances of the same plugin keep separate saved state.
-        store = getattr(ctx, "config_store", None)
-        if store is not None:
-            saved = store.get_plugin_props(self.instance_id)
-            for key, val in saved.items():
-                if key in self.properties:
-                    self._prop_values[key] = val
+        # NOTE: persisted values are loaded in _load_persisted_props(), called
+        # by the registry AFTER instance_id is assigned. In __init__ the
+        # instance_id may still be the default (== name), so the per-instance
+        # lookup (keyed by "Name#N") would miss. For singletons (instance_id
+        # == name) we load here; multi-instance re-loads after assignment.
+        self._load_persisted_props()
+
+    def _load_persisted_props(self):
+        """Apply persisted property values from the config store.
+
+        Keyed by instance_id so two instances of the same plugin keep separate
+        saved state. Unknown keys are ignored so a schema change across versions
+        doesn't resurrect stale properties. Called once at construction (when
+        instance_id may still be the default name) and re-called by the registry
+        after it assigns the real instance_id — the second call wins for
+        multi-instance plugins."""
+        store = getattr(self.ctx, "config_store", None)
+        if store is None:
+            return
+        saved = store.get_plugin_props(self.instance_id)
+        for key, val in saved.items():
+            if key in self.properties:
+                self._prop_values[key] = val
 
     # --- property access ---
     def get(self, key: str, default: Any = None) -> Any:

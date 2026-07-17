@@ -26,14 +26,19 @@
       <div class="empty" id="empty-hint">Enable a Source + a Display to see data</div>
     </div>
 
-    <!-- Right control panel: robot fleet + ICP + gridmap (all stacked) -->
+    <!-- Right control panel: robot fleet + gridmap(explorer) + ICP (stacked) -->
     <div id="controlpanel">
       <div id="robot-panel"></div>
-      <div id="reg-panel"></div>
-      <!-- 2D top-down gridmap (resident component under ICP card) -->
+      <!-- 2D top-down gridmap + exploration status -->
       <div id="gridmap-section">
         <div class="section-title">Gridmap</div>
         <div id="gridmap-controls">
+          <div class="view-toggle" id="grid-view-toggle">
+            <button class="view-btn active" data-view="auto" title="自动：融合优先，否则有数据的单机">自动</button>
+            <button class="view-btn" data-view="merged" title="融合栅格（ICP 配准后）">融合</button>
+            <button class="view-btn" data-view="robot_a" title="Unitree (Robot A) 栅格">A</button>
+            <button class="view-btn" data-view="robot_b" title="Agibot (Robot B) 栅格">B</button>
+          </div>
           <button class="ssh-btn sem-trigger" id="sem-trigger-btn" title="运行一次语义推理">🧠 语义推理</button>
           <label class="mode-toggle" title="勾选后按间隔自动运行语义推理">
             <input type="checkbox" id="sem-auto"/>
@@ -45,18 +50,32 @@
           <canvas id="grid-canvas"></canvas>
           <div class="pick" id="grid-pick"></div>
         </div>
+        <!-- Exploration status panel -->
+        <div id="explore-status">
+          <div class="es-actions">
+            <button class="ssh-btn es-step-btn" id="es-step-btn" title="执行一步探索（转向或前进0.5m）">▶ 执行一步</button>
+            <button class="ssh-btn es-stop-btn" id="es-stop-btn" title="停止探索">⏹ 停止</button>
+          </div>
+          <div class="es-row"><span class="es-label">模式</span><b id="es-mode">待机</b></div>
+          <div class="es-row"><span class="es-label">下一步</span><b id="es-action">—</b></div>
+          <div class="es-row"><span class="es-label">目标</span><b id="es-target">—</b></div>
+          <div class="es-row"><span class="es-label">实时坐标</span><b id="es-pos">—</b></div>
+          <div class="es-row"><span class="es-label">距离/角差</span><b id="es-dist">—</b></div>
+          <div class="es-row"><span class="es-label">步数</span><b id="es-step">—</50></div>
+        </div>
       </div>
+      <div id="reg-panel"></div>
     </div>
 
     <!-- Status bar -->
     <div id="statusbar">
-      <div class="item">frame <b id="st-frame">0/0</b></div>
-      <div class="item">pts <b id="st-pts2">0</b></div>
-      <div class="item">reg <b id="st-reg">idle</b></div>
-      <div class="item">frontier <b id="st-front">0</b></div>
-      <div class="item">explored <b id="st-expl">0%</b></div>
-      <div class="item">robots <b id="st-robots">0/0</b></div>
-      <div class="item" style="margin-left:auto">mem <b id="st-mem">0</b>MB · cpu <b id="st-cpu">0</b>% · fps <b id="st-fps">0</b></div>
+      <div class="item">A<b id="st-frame-a">0/0</b>·<b id="st-pts-a">0</b></div>
+      <div class="item">B<b id="st-frame-b">0/0</b>·<b id="st-pts-b">0</b></div>
+      <div class="item">reg<b id="st-reg">idle</b></div>
+      <div class="item">frt<b id="st-front">0</b></div>
+      <div class="item">cov<b id="st-expl">0%</b></div>
+      <div class="item">bot<b id="st-robots">0/0</b></div>
+      <div class="item" style="margin-left:auto"><b id="st-mem">0</b>M·<b id="st-cpu">0</b>%·<b id="st-fps">0</b>fps</div>
       <button id="dbg-toggle" class="dbg-toggle" title="调试信息台">🐛</button>
     </div>
 

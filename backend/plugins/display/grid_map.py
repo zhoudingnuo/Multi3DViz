@@ -36,6 +36,12 @@ class GridMapDisplay(DisplayPlugin):
     description = "Top-down 2D occupancy grid built from a robot's point cloud."
     default_enabled = True
     multiple = True              # one instance per robot grid
+    # One GridMap per robot so the 2D panel can show A, B, and the merged
+    # view (published by the explorer) and auto-switch between them.
+    default_instances = [
+        {"robot_id": "robot_a"},
+        {"robot_id": "robot_b"},
+    ]
 
     properties = {
         "robot_id": {

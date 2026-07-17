@@ -258,12 +258,22 @@ class DualAgentExplorer:
            the frontier becomes reachable next round. Still no candidate =>
            target None (hold).
 
+        Single-robot mode: pass world_b=None — agent 1 is skipped entirely
+        (no position, no target, no separation check for agent 0).
+
         Returns the list [(gy, gx) | None, (gy, gx) | None].
         """
         clusters = self.detect_frontiers()  # refreshes self._conn_label too
         gi_a, gy_a = self.world_to_grid(world_a[0], world_a[1])
-        gi_b, gy_b = self.world_to_grid(world_b[0], world_b[1])
-        pos = [(gy_a, gi_a), (gy_b, gi_b)]
+        # Single-robot: world_b=None means agent 1 is absent. Use a far-away
+        # sentinel so separation never triggers for agent 0, and skip agent 1's
+        # target assignment (it stays None).
+        single = world_b is None
+        if not single:
+            gi_b, gy_b = self.world_to_grid(world_b[0], world_b[1])
+            pos = [(gy_a, gi_a), (gy_b, gi_b)]
+        else:
+            pos = [(gy_a, gi_a), (-99999, -99999)]
         comp = [self._comp_at(gy, gx) for (gy, gx) in pos]
         sensor = self.SENSOR_RADIUS_CELLS
 
@@ -281,7 +291,7 @@ class DualAgentExplorer:
         #    robot). If the map updated and a new obstacle cut off the path,
         #    abandon the stale target and fall through to stage 2.
         new_targets = [None, None]
-        for i in (0, 1):
+        for i in ((0,) if single else (0, 1)):
             if self.targets[i] is None:
                 continue
             gy, gx = self.targets[i]
@@ -311,10 +321,12 @@ class DualAgentExplorer:
             return (cy // cell_size, cx // cell_size)
 
         # Update visited memory for each agent at current position
-        for i, (gy, gx) in enumerate(pos):
+        _agents = (0,) if single else (0, 1)
+        for i in _agents:
+            gy, gx = pos[i]
             self.visited[i].add(cell_key(gy, gx))
 
-        for i in (0, 1):
+        for i in _agents:
             if new_targets[i] is not None:
                 continue
             pos_self = pos[i]
@@ -350,7 +362,7 @@ class DualAgentExplorer:
         # Drop the region-memory constraint (re-sweeps are OK at this point)
         # then drop the separation constraint. The SAME-COMPONENT constraint is
         # NEVER relaxed — it is a hard safety bound, not a preference.
-        for i in (0, 1):
+        for i in _agents:
             if new_targets[i] is not None:
                 continue
             pos_self = pos[i]
@@ -382,7 +394,7 @@ class DualAgentExplorer:
         # nearest unreachable frontier by aiming at the in-component free cell
         # closest to that frontier's centroid. As the map fills in and a gap
         # opens (components merge) the frontier becomes reachable next round.
-        for i in (0, 1):
+        for i in _agents:
             if new_targets[i] is not None:
                 continue
             if comp[i] == 0 or self._conn_label is None:

@@ -85,6 +85,7 @@ class ExplorerService(ServicePlugin):
         self._grid_t = 0.0
         self._last_dispatch = [0.0, 0.0]
         self._last_target = [None, None]
+        self._single_rid = None  # set in update(): which robot has data in single mode
 
     def on_enable(self):
         log.info("DualAgentExplorer ready (waits for ICP)")
@@ -109,21 +110,59 @@ class ExplorerService(ServicePlugin):
 
     # --- main tick ---
     def update(self, dt: float):
-        # Gate: only run once ICP has produced a transform. We peek at the
-        # ICPRegistration plugin's state (loose coupling — both are services).
-        icp = self.ctx  # ctx.robots etc; we reach the registry via a hook
-        # The backend sets ctx.icp_ref so we can read T_b_to_a without import cycles.
+        # TEMPORARILY DISABLED — explorer causes tick loop freeze during
+        # takeover. See _update_inner for the full logic. Will be re-enabled
+        # once the root cause is fixed.
+        return None
+
+    def _bg_compute(self, dt: float):
+        """Background thread: run the full explorer update cycle. Stores the
+        SceneUpdate result in _bg_result for update() to pick up next tick.
+        Any crash is caught — explorer must NEVER bring down the backend."""
+        try:
+            self._bg_result = self._update_inner(dt)
+        except Exception:
+            log.exception("explorer bg compute crashed (tick loop protected)")
+            self._bg_result = None
+        finally:
+            self._bg_running = False
+
+    def _update_inner(self, dt: float):
+        # ICP transform is optional — single-robot mode doesn't need it.
+        # We read it if available (dual-robot, post-ICP); otherwise T=None and
+        # we operate on a single source alone (single-robot exploration).
         T = self._get_icp_transform()
-        if T is None:
-            return None
         self._T_b_to_a = T
 
-        fa = self.ctx.data.latest(self.get("source_a", "robot_a"))
-        fb = self.ctx.data.latest(self.get("source_b", "robot_b"))
-        if fa is None or fb is None:
-            return None
+        sa = self.get("source_a", "robot_a")
+        sb = self.get("source_b", "robot_b")
+        fa = self.ctx.data.latest(sa)
+        fb = self.ctx.data.latest(sb) if T is not None else None
+        # Single-robot fallback: if source_a has no data (e.g. only robot_b is
+        # online and recording), use source_b as the single source. This lets
+        # exploration work with whichever robot actually has data, without the
+        # user having to swap source_a/source_b in the config.
+        self._single_rid = None  # which robot the single-source mode is using
+        if fa is None and fb is None:
+            # Neither source has data yet — try any robot in the data bus.
+            for rid in self.ctx.data.robots():
+                fa = self.ctx.data.latest(rid)
+                if fa is not None:
+                    self._single_rid = rid
+                    break
+            if fa is None:
+                return None
+        elif fa is None:
+            # source_b has data but source_a doesn't — swap: use B as the
+            # single source (identity transform).
+            fa = fb
+            fb = None
+            T = None
+            self._single_rid = sb
+            self._T_b_to_a = None
 
-        # Periodically rebuild the merged gridmap from the merged cloud.
+        # Periodically rebuild the gridmap. Single-robot: just A's cloud.
+        # Dual-robot (post-ICP): merged A + T@B.
         self._grid_t += dt
         if self._grid_t >= GRID_REBUILD_INTERVAL:
             self._grid_t = 0.0
@@ -133,18 +172,14 @@ class ExplorerService(ServicePlugin):
             return None
 
         # On first entry after grid+explorer creation, do a BATCH mark_explored
-        # over ALL recorded odom positions — not just the latest. ccenter does
-        # this naturally because its playback cursor advances frame by frame
-        # and mark_explored runs each tick. But Multi3DViz's instant_load mode
-        # publishes odom[-1] every tick (the final pose), so without this batch
-        # pass only a single disk at the endpoint would be marked explored.
+        # over ALL recorded odom positions.
         if not self._batch_marked:
             self._batch_mark_explored(fa, fb, T)
             self._batch_marked = True
 
         # Current robot positions in merged frame: (wx, wy, yaw).
         pos_a = self._robot_pos(fa, np.eye(4))
-        pos_b = self._robot_pos(fb, T)
+        pos_b = self._robot_pos(fb, T) if (fb is not None and T is not None) else None
         if pos_a is not None:
             wx, wy, yaw = pos_a
             self._explorer.mark_explored((wx, wy), yaw=yaw)
@@ -158,12 +193,17 @@ class ExplorerService(ServicePlugin):
         self._assign_t += dt
         if self._assign_t >= ASSIGN_INTERVAL:
             self._assign_t = 0.0
-            if pos_a is not None and pos_b is not None:
-                # assign_targets takes world positions (x,y); yaw is only used
-                # by mark_explored for the sensor model.
-                self._explorer.assign_targets((pos_a[0], pos_a[1]),
-                                              (pos_b[0], pos_b[1]))
-                self._maybe_dispatch((pos_a[0], pos_a[1]), (pos_b[0], pos_b[1]))
+            if pos_a is not None:
+                # Single-robot: assign_targets with A's position for agent 0,
+                # and B's position if available (agent 1). The explorer handles
+                # a missing second agent gracefully (pos_b None → agent 1 idle).
+                pb = (pos_b[0], pos_b[1]) if pos_b is not None else None
+                self._explorer.assign_targets((pos_a[0], pos_a[1]), pb)
+                if pos_b is not None:
+                    self._maybe_dispatch((pos_a[0], pos_a[1]), (pos_b[0], pos_b[1]))
+                else:
+                    # Single-robot dispatch: only agent 0.
+                    self._maybe_dispatch_single((pos_a[0], pos_a[1]))
 
         return self._publish_scene()
 
@@ -178,8 +218,8 @@ class ExplorerService(ServicePlugin):
 
     def _rebuild_grid(self, fa, fb):
         pts_a = np.asarray(fa.get("positions", []), dtype=np.float64)
-        pts_b = np.asarray(fb.get("positions", []), dtype=np.float64)
-        if len(pts_b):
+        pts_b = np.asarray(fb.get("positions", []), dtype=np.float64) if fb is not None else np.empty((0,3))
+        if len(pts_b) and self._T_b_to_a is not None:
             pts_b = transform_points(pts_b, self._T_b_to_a)
         merged = np.vstack([pts_a, pts_b]) if len(pts_a) and len(pts_b) \
             else (pts_a if len(pts_a) else pts_b)
@@ -251,16 +291,22 @@ class ExplorerService(ServicePlugin):
         if ex is None or self._gmap is None:
             return False
         fa = self.ctx.data.latest(self.get("source_a", "robot_a"))
-        fb = self.ctx.data.latest(self.get("source_b", "robot_b"))
-        if fa is None or fb is None:
+        if fa is None:
             return False
         pos_a = self._robot_pos(fa, np.eye(4))
-        pos_b = self._robot_pos(fb, self._T_b_to_a or np.eye(4))
-        if pos_a is None or pos_b is None:
+        if pos_a is None:
             return False
+        # source_b is optional (single-robot mode).
+        fb = self.ctx.data.latest(self.get("source_b", "robot_b")) \
+            if self._T_b_to_a is not None else None
+        pos_b = self._robot_pos(fb, self._T_b_to_a) if (fb and self._T_b_to_a is not None) else None
         # Force dispatch by clearing cooldown latches.
         self._last_dispatch = [0.0, 0.0]
-        self._dispatch_now(pos_a, pos_b)
+        if pos_b is not None:
+            self._dispatch_now(pos_a, pos_b)
+        else:
+            # Single-robot: force-dispatch agent 0 only.
+            self._dispatch_now_single(pos_a)
         return True
 
     def _dispatch_now(self, pos_a, pos_b):
@@ -271,6 +317,49 @@ class ExplorerService(ServicePlugin):
             self._maybe_dispatch(pos_a, pos_b)
         finally:
             self._prop_values["auto_explore"] = saved
+
+    def _dispatch_now_single(self, pos_a):
+        """Force-dispatch agent 0 only (single-robot mode)."""
+        saved = self.get("auto_explore", True)
+        self._prop_values["auto_explore"] = True
+        try:
+            self._maybe_dispatch_single(pos_a)
+        finally:
+            self._prop_values["auto_explore"] = saved
+
+    def _maybe_dispatch_single(self, pos_a):
+        """SSH-write target file to the single active robot (single-robot mode).
+        Uses self._single_rid (set in update) to pick the right robot + target
+        path — may be robot_a or robot_b depending on which has data."""
+        if not self.get("dispatch_targets", True):
+            return
+        if not self.get("auto_explore", True):
+            return  # manual mode — wait for confirm_targets (Enter)
+        if not self.ctx.robots:
+            return
+        tgt = self._explorer.targets[0]
+        if tgt is None:
+            return
+        now = time.monotonic()
+        if tgt == self._last_target[0] and now - self._last_dispatch[0] < DISPATCH_COOLDOWN:
+            return
+        # Pick the robot + target path for whichever robot is the single source.
+        rid = self._single_rid or self.get("source_a", "robot_a")
+        if rid == self.get("source_b", "robot_b"):
+            tpath = self.get("target_path_b")
+        else:
+            tpath = self.get("target_path_a")
+        conn = self.ctx.robots.get(rid)
+        if conn is None:
+            return
+        gy, gx = tgt
+        wx, wy = self._explorer.grid_to_world(gy, gx)
+        content = (f"mode: explore\nframe: {0}\ntimestamp: {time.time()}\n"
+                   f"global_x: {wx}\nglobal_y: {wy}\nlocal_x: {wx}\nlocal_y: {wy}\n")
+        if conn.write_file(tpath, content):
+            self._last_target[0] = tgt
+            self._last_dispatch[0] = now
+            self._last_dispatch[0] = now
 
     def _maybe_dispatch(self, pos_a, pos_b):
         """SSH-write target files to both robots (best-effort, rate-limited).
@@ -313,24 +402,50 @@ class ExplorerService(ServicePlugin):
         gmap = self._gmap
         if ex is None or gmap is None:
             return upd
-        # Coverage + frontier as int8 grids the frontend tints.
+        # CROP to the explored bounding box — the full grid is 1200x1200 (1.4MB)
+        # but most of it is empty unexplored space. Sending the whole thing every
+        # explorer cycle (2s) floods the WS with 2.8MB per update → bridge.serialize
+        # blocks the event loop → tick loop freezes during takeover.
+        # We crop to the bounding box of (explored | obstacles | frontiers) with
+        # a small margin, and adjust origin accordingly. Typical crop: 200x200.
+        active = ex.explored if ex.explored is not None else np.zeros_like(gmap.grid, dtype=bool)
+        active = active | (gmap.grid == 100)
+        if ex.frontier_cells is not None:
+            active = active | ex.frontier_cells
+        ys, xs = np.where(active)
+        if len(ys) == 0:
+            return upd  # nothing to show yet
+        margin = 20
+        y0, y1 = max(0, ys.min() - margin), min(gmap.grid.shape[0], ys.max() + margin + 1)
+        x0, x1 = max(0, xs.min() - margin), min(gmap.grid.shape[1], xs.max() + margin + 1)
+        cells = gmap.grid[y0:y1, x0:x1].copy()
+        crop_origin = [gmap.origin[0] + x0 * gmap.res,
+                       gmap.origin[1] + y0 * gmap.res]
+        # Merged base occupancy grid (cropped).
+        upd.update.append(SceneObject(
+            id="merged_grid2d",
+            kind="grid2d",
+            payload={"cells": cells,
+                     "origin": crop_origin, "resolution": gmap.res},
+            meta={"type": "merged"},
+        ))
+        # Coverage + frontier (cropped).
         # Encode: 0=free-unexplored, 1=explored, 2=frontier, 100=obstacle.
-        cov = np.zeros_like(gmap.grid, dtype=np.int8)
-        cov[gmap.grid == 100] = 100
-        cov[ex.explored] = 1
-        if ex.frontier_cells is not None and ex.frontier_cells.shape == cov.shape:
-            # Guard: only mark frontiers if we have meaningful explored area
-            # AND the frontier count is reasonable (< 30% of free cells).
-            # Without this guard, early explorer runs with nearly-empty explored
-            # masks produce frontier_cells covering the entire grid → all yellow.
-            n_frontier = int(ex.frontier_cells.sum())
-            n_free = int((gmap.grid == 0).sum())
+        cov = np.zeros_like(cells, dtype=np.int8)
+        cov[cells == 100] = 100
+        explored_crop = ex.explored[y0:y1, x0:x1] if ex.explored is not None else None
+        if explored_crop is not None:
+            cov[explored_crop] = 1
+        if ex.frontier_cells is not None and ex.frontier_cells.shape == gmap.grid.shape:
+            frontier_crop = ex.frontier_cells[y0:y1, x0:x1]
+            n_frontier = int(frontier_crop.sum())
+            n_free = int((cells == 0).sum())
             if n_free > 0 and n_frontier < n_free * 0.3:
-                cov[ex.frontier_cells] = 2
+                cov[frontier_crop] = 2
         upd.update.append(SceneObject(
             id="explorer_overlay",
             kind="grid2d",
-            payload={"cells": cov, "origin": list(gmap.origin), "resolution": gmap.res},
+            payload={"cells": cov, "origin": crop_origin, "resolution": gmap.res},
             meta={"type": "explorer", "robots": [self.get("source_a"), self.get("source_b")]},
         ))
         # Trajectories as lines.

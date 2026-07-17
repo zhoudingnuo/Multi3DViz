@@ -30,7 +30,8 @@ from typing import Optional, Callable
 log = logging.getLogger("multi3dviz.robots")
 
 # Heartbeat interval + reconnect backoff bounds.
-HEARTBEAT_INTERVAL = 3.0      # seconds between pings while online
+HEARTBEAT_INTERVAL = 8.0      # seconds between pings while online (was 3s —
+                               # reduced contention with velocity/explore ops)
 CONNECT_TIMEOUT = 4.0         # SSH connect/auth timeout
 RECONNECT_MIN = 2.0           # first reconnect backoff
 RECONNECT_MAX = 30.0          # cap

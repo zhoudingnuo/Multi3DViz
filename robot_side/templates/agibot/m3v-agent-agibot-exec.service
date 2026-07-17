@@ -1,0 +1,30 @@
+[Unit]
+Description=Multi3DViz 受控端 executor (Agibot D1, host-side mc_sdk)
+# This is the EXECUTE-only agent running on the host (no ROS). It reads targets
+# from ccenter_target_b.txt, computes velocity via the Navigator P-controller,
+# and drives the robot via mc_sdk_zsl_1_py over UDP 43988. Pose comes from the
+# odom_stream.jsonl written by the container-side recorder (file-pose fallback).
+#
+# The container-side recorder is managed separately by pipeline.sh (launched via
+# the control side's "启动" button), NOT by this service.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="PYTHONUNBUFFERED=1"
+# No ROS sourcing needed — execute mode only needs mc_sdk + numpy. The SDK lib
+# path is set in config.yaml (agibot_sdk_lib_path). Working dir = install root
+# so `python3 -m m3v_agent.agent` resolves.
+ExecStart=/bin/bash -c 'cd /opt/m3v-agent && exec python3 -m m3v_agent.agent --config /etc/m3v-agent/config.yaml --mode execute'
+WorkingDirectory=/opt/m3v-agent
+Restart=on-failure
+RestartSec=3
+# Give the agent a chance to lie_down + flush on stop.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+# Run as root so we can read the target file + bind UDP 43988 without friction.
+User=root
+
+[Install]
+WantedBy=multi-user.target

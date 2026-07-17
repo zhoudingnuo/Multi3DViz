@@ -22,12 +22,35 @@ GRID_REFRESH_INTERVAL = 100  # repaint the 2D GDI grid panel every N frames
 MAX_ACCUM_PTS = 1_500_000  # ~1.5M pts/window ceiling
 
 
-def load_gravity(data_root):
-    """Pick the most recent run dir under data_root and return (run_dir, R)
-    where R is the 3x3 gravity-correction rotation."""
-    run_dir = max([os.path.join(data_root, d) for d in os.listdir(data_root)
-                   if os.path.isdir(os.path.join(data_root, d))])
+def load_gravity(run_dir):
+    """Return (run_dir, R) where R is the 3x3 gravity-correction rotation.
+
+    Accepts a run directory. If it has gravity_calibration.json, use it.
+    Otherwise search SIBLING run directories (same parent) for the newest one
+    that has a gravity file — the IMU calibration is roughly constant across
+    runs on the same robot, so a recent calibration is better than none."""
     grav_file = os.path.join(run_dir, "gravity_calibration.json")
+    if os.path.exists(grav_file):
+        # Direct hit — use it.
+        pass
+    else:
+        # Search sibling runs in the parent data directory for a gravity file.
+        parent = os.path.dirname(run_dir)
+        found = None
+        try:
+            siblings = [os.path.join(parent, d) for d in os.listdir(parent)
+                        if os.path.isdir(os.path.join(parent, d))]
+            # Prefer siblings that have gravity_calibration.json, pick newest.
+            with_grav = [d for d in siblings
+                         if os.path.exists(os.path.join(d, "gravity_calibration.json"))]
+            if with_grav:
+                found = max(with_grav)
+        except OSError:
+            pass
+        if found:
+            grav_file = os.path.join(found, "gravity_calibration.json")
+        else:
+            return run_dir, np.eye(3)
     if os.path.exists(grav_file):
         grav = json.load(open(grav_file))
         roll, pitch = np.radians(grav["roll_deg"]), np.radians(grav["pitch_deg"])

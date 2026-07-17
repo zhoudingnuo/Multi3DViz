@@ -110,6 +110,18 @@ logging.basicConfig(
     stream=sys.stderr,  # keep stdout clean for the READY line
 )
 log = logging.getLogger("multi3dviz.main")
+# Also log to a file so we can debug the frozen exe (stderr isn't visible
+# when launched by Electron). Writes next to the executable.
+try:
+    import os as _os, sys as _sys
+    _log_dir = _os.path.dirname(_sys.executable) if getattr(_sys, "frozen", False) \
+               else _os.path.dirname(_os.path.abspath(__file__))
+    _fh = logging.FileHandler(_os.path.join(_log_dir, "backend_debug.log"), mode="a")
+    _fh.setLevel(logging.INFO)
+    _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logging.getLogger().addHandler(_fh)
+except Exception:
+    pass
 
 # Install crash hooks FIRST so any startup failure produces a crash log.
 install_excepthooks()
@@ -128,7 +140,12 @@ DEFAULT_ROBOTS = [
     {"robot_id": "robot_b", "host": "10.60.77.154", "port": 22,
      "user": "orin-001", "password": None,
      "label": "Agibot D1",
-     "data_path": "", "launch_cmd": "/home/orin-001/sda2/restart_all.sh"},
+     "data_path": "",
+     # This script is exec'd INSIDE the fastlio_noetic container by
+     # ssh_launcher._launch (see AGIBOT_CONTAINER). It starts roscore + livox +
+     # FAST-LIO + the m3v_agent recorder (ROS1 rospy). The host's
+     # ~/m3v-agent is mounted at /scripts/m3v_agent inside the container.
+     "launch_cmd": "/scripts/m3v_agent/pipeline.sh"},
 ]
 
 
@@ -138,6 +155,21 @@ class Backend:
     def __init__(self):
         self.ctx = PluginContext()
         self.bridge = SceneBridge()
+        # Dedicated single-thread executor for robot velocity commands, so that
+        # a slow/blocked _send_vel (PTY buffer full, one-shot SSH fallback) can
+        # never starve the default thread pool that registry.tick runs in.
+        # Without this, 10Hz velocity sends during takeover fill the shared
+        # pool → LocalReplay.update stops being called → point cloud freezes.
+        import concurrent.futures as _cf
+        self._vel_pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="vel")
+        # Dedicated pool for registry.tick — MUST be separate from the pool
+        # that handles robot_command SSH operations (takeover, channel_status,
+        # toggle_pose). Those can block for seconds (TCP connect, SSH exec),
+        # and if they share the default pool with tick, the threads get
+        # consumed → tick stops running → point cloud freezes during takeover.
+        self._tick_pool = _cf.ThreadPoolExecutor(max_workers=2, thread_name_prefix="tick")
+        # Dedicated pool for robot_command SSH ops (launch, takeover, status).
+        self._cmd_pool = _cf.ThreadPoolExecutor(max_workers=3, thread_name_prefix="cmd")
         # Persistent config: plugin props + robot fleet + app settings.
         # Lives next to the backend entry (dev). Packaging can redirect to
         # %APPDATA% via an env override.
@@ -171,6 +203,8 @@ class Backend:
         self._reg_t = 0.0
         # process-stats broadcast accumulator (every ~1s)
         self._stat_t = 0.0
+        # exploration snapshot save accumulator (every ~3s, overwrites)
+        self._snap_t = 0.0
         # battery query accumulator (every ~30s — SSH query is slow)
         self._batt_t = 0.0
 
@@ -239,7 +273,13 @@ class Backend:
             async for raw in websocket:
                 if isinstance(raw, bytes):
                     continue  # backend doesn't accept binary from frontend yet
-                await self._handle_text(websocket, raw)
+                try:
+                    await self._handle_text(websocket, raw)
+                except Exception:
+                    # A single message handler crashing must NOT kill the WS
+                    # connection (which would cancel the tick loop + freeze
+                    # the UI). Log and keep going.
+                    log.exception("message handler crashed (connection kept alive)")
         except ConnectionClosed:
             pass
         except Exception:
@@ -343,26 +383,64 @@ class Backend:
                 self.registry.enable("SSHLauncher")
                 inst = self.registry.get("SSHLauncher")
             loop = asyncio.get_event_loop()
+            action = msg.get("action", "")
             if inst is not None:
-                result = await loop.run_in_executor(
-                    None, inst.command, msg.get("robot_id"),
-                    msg.get("action"), msg.get("value"))
+                # takeover_start opens a sport channel (4-8s DDS init). Awaiting
+                # it blocks the WS handler → frontend WS timeout → reconnect.
+                # Fire-and-forget; the frontend polls channel_status separately.
+                if action == "takeover_start":
+                    loop.run_in_executor(
+                        self._cmd_pool, inst.command, msg.get("robot_id"), action, msg.get("value"))
+                    await ws.send(proto.make_response(rid, ok=True, started=True))
+                else:
+                    result = await loop.run_in_executor(
+                        self._cmd_pool, inst.command, msg.get("robot_id"),
+                        action, msg.get("value"))
+                    await ws.send(proto.make_response(rid, **result))
             else:
-                result = {"ok": False, "error": "SSHLauncher not available"}
-            await ws.send(proto.make_response(rid, **result))
+                await ws.send(proto.make_response(rid, ok=False, error="SSHLauncher not available"))
         elif mtype == "robot_vel":
             # Keyboard takeover velocity: {robot_id, vx, vy, yaw}. Fire-and-forget
             # (no response — frontend sends ~10Hz, acking each would flood).
-            # Routes to SSHLauncher vel action which SSH-sends to the robot.
+            # CRITICAL: must NOT run synchronously — if the sport channel is
+            # dead, _send_vel falls back to a 3-5s one-shot SSH exec, which
+            # would block the asyncio event loop (and the tick loop that feeds
+            # LocalReplay) for the entire duration → point cloud freezes.
+            # Run in executor so it can't stall the loop. Skip entirely if no
+            # channel is open (the one-shot fallback is too slow for 10Hz).
             inst = self.registry.get("SSHLauncher")
             if inst is None:
                 self.registry.enable("SSHLauncher")
                 inst = self.registry.get("SSHLauncher")
             if inst is not None:
-                inst.command(msg.get("robot_id"), "vel",
-                             {"vx": float(msg.get("vx", 0)),
-                              "vy": float(msg.get("vy", 0)),
-                              "yaw": float(msg.get("yaw", 0))})
+                rid_vel = msg.get("robot_id")
+                # CACHED gateway check: _channel_alive and _get_vel_sock do
+                # SSH/TCP operations that can BLOCK the event loop if called
+                # synchronously here (paramiko channel checks, socket connect
+                # with timeout). At 10Hz during takeover, even a 50ms block
+                # per call starves the tick loop → point cloud freezes.
+                # Cache the result for 2s — the channel doesn't change that
+                # fast, and a stale "true" just means we try sendall (which
+                # fails fast if the socket is dead).
+                import time as _vtime
+                _now = _vtime.monotonic()
+                _cache_key = f"_vel_ok_{rid_vel}"
+                _cache_ts = f"_vel_ok_ts_{rid_vel}"
+                if not hasattr(self, _cache_ts) or _now - getattr(self, _cache_ts) > 2.0:
+                    conn_vel = self.robots.get(rid_vel) if self.robots else None
+                    setattr(self, _cache_key,
+                            inst._channel_alive(rid_vel) or
+                            inst._get_vel_sock(rid_vel, conn_vel) is not None)
+                    setattr(self, _cache_ts, _now)
+                has_vel = getattr(self, _cache_key, False)
+                if not has_vel:
+                    log.warning("robot_vel %s dropped: no TCP or SSH channel", rid_vel)
+                if has_vel:
+                    asyncio.get_event_loop().run_in_executor(
+                        self._vel_pool, inst.command, rid_vel, "vel",
+                        {"vx": float(msg.get("vx", 0)),
+                         "vy": float(msg.get("vy", 0)),
+                         "yaw": float(msg.get("yaw", 0))})
         elif mtype == "register":
             # Force (re-)run of ICP registration between source_a/source_b.
             inst = self.registry.get("ICPRegistration")
@@ -411,6 +489,54 @@ class Backend:
             if inst is not None:
                 inst.force_predict()
             await ws.send(proto.make_response(rid, ok=inst is not None))
+        elif mtype == "explore_execute":
+            # Safe step-by-step navigation toward the explorer's current target.
+            # Reads the target from the explorer (agent 0), converts grid→world,
+            # then drives the robot via SSHLauncher.explore_execute (2s-limited
+            # walk bursts + odom-based arrival check). Runs in executor.
+            ex = self.registry.get("DualAgentExplorer")
+            ssh = self.registry.get("SSHLauncher")
+            if ex is None or ex._explorer is None:
+                await ws.send(proto.make_response(rid, ok=False, error="no explorer target"))
+            elif ssh is None:
+                await ws.send(proto.make_response(rid, ok=False, error="SSHLauncher unavailable"))
+            else:
+                tgt = ex._explorer.targets[0]
+                if tgt is None:
+                    await ws.send(proto.make_response(rid, ok=False, error="no frontier target selected"))
+                else:
+                    gy, gx = tgt
+                    wx, wy = ex._explorer.grid_to_world(gy, gx)
+                    # Which robot to drive: the single-source rid, or the msg's robot_id.
+                    drv_rid = ex._single_rid or msg.get("robot_id") or ex.get("source_a", "robot_a")
+                    conn = self.robots.get(drv_rid) if self.robots else None
+                    if conn is None:
+                        await ws.send(proto.make_response(rid, ok=False,
+                                                          error=f"robot {drv_rid} not connected"))
+                    else:
+                        # Fire-and-forget: explore_execute mode=start does
+                        # open_sport_channel (6s) + stand (3s) = ~9s. Awaiting
+                        # it would block this WS handler for 9s → frontend WS
+                        # heartbeat timeout → "ws not open" + reconnect.
+                        # Run without await; the step result comes back on the
+                        # NEXT explore_execute call (mode=step).
+                        mode = msg.get("mode", "start")
+                        if mode == "step" or mode == "stop":
+                            # step/stop are fast (<2s) — safe to await.
+                            loop = asyncio.get_event_loop()
+                            result = await loop.run_in_executor(
+                                self._cmd_pool, ssh.command, drv_rid, "explore_execute",
+                                {"target": [wx, wy], "mode": mode})
+                            await ws.send(proto.make_response(rid, **result))
+                        else:
+                            # start: fire-and-forget (too slow to await).
+                            loop = asyncio.get_event_loop()
+                            loop.run_in_executor(
+                                self._cmd_pool, ssh.command, drv_rid, "explore_execute",
+                                {"target": [wx, wy], "mode": mode})
+                            await ws.send(proto.make_response(
+                                rid, ok=True, started=True, action="STARTING",
+                                target=[round(wx,2), round(wy,2)]))
         elif mtype == "confirm_targets":
             # Manual confirm frontier targets (Enter key in non-auto explore mode).
             ex = self.registry.get("DualAgentExplorer")
@@ -587,7 +713,92 @@ class Backend:
         robots = self.robots.list_state()
         info["robots_total"] = len(robots)
         info["robots_online"] = sum(1 for r in robots if r["state"] == "online")
+        # Exploration execution state for the status panel.
+        info["explore_mode"] = "idle"   # "single" | "dual" | "idle"
+        info["explore_target"] = None   # [wx, wy] or null
+        info["explore_robot"] = None    # "robot_a" | "robot_b"
+        info["explore_running"] = False
+        info["explore_step"] = 0
+        info["explore_dist"] = None     # distance to target (m)
+        info["explore_angle"] = None    # angle error to target (deg)
+        info["robot_pos_a"] = None      # [x, y, yaw] or null
+        info["robot_pos_b"] = None
+        # Mode: single (one source) vs dual (both + ICP).
+        if ex is not None:
+            info["explore_mode"] = "dual" if ex._T_b_to_a is not None else "single"
+            # Target for the active agent (agent 0).
+            if ex._explorer is not None and ex._explorer.targets[0] is not None:
+                gy, gx = ex._explorer.targets[0]
+                info["explore_target"] = list(ex._explorer.grid_to_world(gy, gx))
+            info["explore_robot"] = ex._single_rid or ex.get("source_a", "robot_a")
+        # Live robot positions from odom.
+        import math as _m
+        for rkey, rframe in [("robot_pos_a", fa), ("robot_pos_b", fb)]:
+            if rframe and rframe.get("odom"):
+                o = rframe["odom"]
+                qx = float(o.get("qx", 0)); qy = float(o.get("qy", 0))
+                qz = float(o.get("qz", 0)); qw = float(o.get("qw", 1))
+                yaw = _m.atan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
+                info[rkey] = [round(float(o.get("x", 0)), 2),
+                              round(float(o.get("y", 0)), 2),
+                              round(_m.degrees(yaw), 1)]
+        # Explore execution status from SSHLauncher.
+        ssh = self.registry.get("SSHLauncher")
+        if ssh is not None:
+            info["explore_running"] = bool(getattr(ssh, "_explore_busy", {}).get(info["explore_robot"]))
+            info["explore_step"] = getattr(ssh, "_explore_step", {}).get(info["explore_robot"], 0)
+            # Distance to target.
+            tgt = info["explore_target"]
+            pos = info.get("robot_pos_a") if info["explore_robot"] == "robot_a" else info.get("robot_pos_b")
+            if tgt and pos:
+                dx = tgt[0] - pos[0]; dy = tgt[1] - pos[1]
+                info["explore_dist"] = round(_m.hypot(dx, dy), 2)
+                target_angle = _m.degrees(_m.atan2(dy, dx))
+                yaw_rad = _m.radians(pos[2])
+                angle_err = _m.degrees(_m.atan2(_m.sin(_m.radians(target_angle) - yaw_rad),
+                                                _m.cos(_m.radians(target_angle) - yaw_rad)))
+                info["explore_angle"] = round(angle_err, 1)
         return info
+
+    def _save_live_snapshot(self):
+        """Save a live exploration snapshot every few seconds, OVERWRITING the
+        same file (explore_latest.png) so it's always current. Runs in a daemon
+        thread — matplotlib rendering is slow and must not block the tick loop.
+        Only saves when the explorer has a grid + at least one trail point."""
+        import os as _os
+        import sys as _sys
+        try:
+            ex = self.ctx.explorer_ref
+            if ex is None or getattr(ex, "_gmap", None) is None or \
+                    getattr(ex, "_explorer", None) is None:
+                return
+            # Skip if no exploration has happened yet (no trail).
+            if not ex._traj_a and not ex._traj_b:
+                return
+            from lib.trajectory_plot import save_trajectory_figure
+            if getattr(_sys, "frozen", False):
+                base = _os.path.dirname(_sys.executable)
+            else:
+                base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            out_dir = _os.path.join(base, "output")
+            _os.makedirs(out_dir, exist_ok=True)
+            path = _os.path.join(out_dir, "explore_latest.png")
+            robots = [
+                {"name": "Robot A", "trail": ex._traj_a, "color": "#E74C3C"},
+                {"name": "Robot B", "trail": ex._traj_b, "color": "#3498DB"},
+            ]
+            targets = []
+            e = ex._explorer
+            tcolors = [("#E74C3C", "A"), ("#3498DB", "B")]
+            for i in (0, 1):
+                if e.targets[i] is not None:
+                    gy, gx = e.targets[i]
+                    wx, wy = e.grid_to_world(gy, gx)
+                    targets.append((wx, wy, tcolors[i][0], tcolors[i][1]))
+            save_trajectory_figure(ex._gmap, robots, path,
+                                   coverage_mask=e.explored, targets=targets)
+        except Exception:
+            pass  # best-effort — don't spam logs from a daemon thread
 
     def _export_trajectory(self) -> str | None:
         """Render a trajectory PNG from the explorer's current state. Returns
@@ -597,9 +808,14 @@ class Backend:
                 getattr(ex, "_explorer", None) is None:
             return None
         import os as _os
+        import sys as _sys
         from lib.trajectory_plot import save_trajectory_figure, default_save_path
-        out_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
-                                "..", "output")
+        # Frozen-safe output dir (see _save_exploration_snapshot for rationale).
+        if getattr(_sys, "frozen", False):
+            base = _os.path.dirname(_sys.executable)
+        else:
+            base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        out_dir = _os.path.join(base, "output")
         _os.makedirs(out_dir, exist_ok=True)
         path = default_save_path(out_dir)
         # Build the robots arg expected by save_trajectory_figure: per-robot
@@ -630,6 +846,7 @@ class Backend:
         SceneUpdates, merge, serialize and enqueue frames to the outbox."""
         last = time.monotonic()
         period = 1.0 / TICK_HZ
+        _heartbeat_t = 0.0
         while True:
             try:
                 await asyncio.sleep(period)
@@ -637,18 +854,45 @@ class Backend:
                 return
             now = time.monotonic()
             dt = now - last
+            if dt > 0.2:  # tick took longer than 200ms — something stalled
+                log.warning("TICK STALL: %.0fms since last tick", dt * 1000)
             last = now
             # Run plugin updates in a thread so a slow numpy op can't stall
             # the WS loop. Phase 1 ops are fast, but this is the right shape.
+            _t0 = time.monotonic()
             updates = await asyncio.get_event_loop().run_in_executor(
-                None, self.registry.tick, dt)
+                self._tick_pool, self.registry.tick, dt)
+            _tick_ms = (time.monotonic() - _t0) * 1000
+            if _tick_ms > 100:
+                log.warning("registry.tick took %.0fms", _tick_ms)
+            # Heartbeat: log every 5s so we can tell if the tick loop died.
+            _heartbeat_t += dt
+            if _heartbeat_t >= 5.0:
+                _heartbeat_t = 0.0
+                log.info("tick heartbeat: n_frames=%d, outbox=%d",
+                         len(self._pending),
+                         self._outbox.qsize() if self._outbox else -1)
             for upd in updates:
                 self._pending.append(upd)
             # Merge + serialize + enqueue.
             if self._pending and self._outbox is not None:
+                _s0 = time.monotonic()
                 merged = self._merge_updates(self._pending)
+                _n_pending = len(self._pending)
                 self._pending.clear()
-                for frame in self.bridge.serialize(merged):
+                _frames = self.bridge.serialize(merged)
+                _ser_ms = (time.monotonic() - _s0) * 1000
+                if _ser_ms > 50:
+                    # Log WHAT is being serialized — sizes of each payload.
+                    _sizes = []
+                    for op in (merged.update if hasattr(merged, 'update') else []):
+                        k = getattr(op, 'kind', '?')
+                        p = getattr(op, 'payload', {})
+                        sz = sum(getattr(v, 'nbytes', len(str(v))) for v in (p.values() if isinstance(p, dict) else []))
+                        _sizes.append(f"{k}:{sz//1024}KB")
+                    log.warning("serialize took %.0fms (%d upd) sizes=[%s]",
+                                _ser_ms, _n_pending, ", ".join(_sizes[:5]))
+                for frame in _frames:
                     await self._outbox.put(frame)
             # Periodically broadcast playback state so the UI's seek bar + play
             # button stay in sync (covers looping, programmatic seeks, etc.).
@@ -679,6 +923,15 @@ class Backend:
             # Flush persisted config (plugin props / fleet / enabled set) if
             # dirty. Debounced inside ConfigStore to ~1 write/sec.
             self.config.maybe_save()
+            # Periodically save a live exploration snapshot (overwrite the same
+            # file so it's always current — like a live screenshot). Runs in a
+            # daemon thread so matplotlib rendering doesn't stall the tick loop.
+            self._snap_t += dt
+            if self._snap_t >= 3.0:
+                self._snap_t = 0.0
+                import threading as _th_snap
+                _th_snap.Thread(target=self._save_live_snapshot, daemon=True,
+                                name="snap").start()
             # Periodic process stats (mem/CPU) for the status bar — 1Hz.
             self._stat_t += dt
             if self._stat_t >= 1.0 and self._outbox is not None and self.client is not None:
@@ -696,7 +949,7 @@ class Backend:
             if self._batt_t >= 30.0 and self.robots is not None:
                 self._batt_t = 0.0
                 loop = asyncio.get_event_loop()
-                loop.run_in_executor(None, self._query_batteries)
+                loop.run_in_executor(self._cmd_pool, self._query_batteries)
 
     def _query_batteries(self):
         """Query battery % for all online robots via SSH. Runs in executor."""
