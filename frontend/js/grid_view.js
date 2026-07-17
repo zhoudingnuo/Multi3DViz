@@ -141,6 +141,14 @@ export class GridView {
     this.draw();
   }
 
+  // Set/clear a robot trajectory polyline (world XY). pts = [[x,y],...] or null.
+  setTraj(id, pts) {
+    if (!this._traj) this._traj = {};
+    if (pts === null || pts === undefined) delete this._traj[id];
+    else this._traj[id] = pts;
+    this.draw();
+  }
+
   // Receive the semantic overlay grid2d op (UNet classes / room ids).
   setSemOverlay(op) {
     this.semCells = op.cells;
@@ -269,16 +277,76 @@ export class GridView {
       }
       ctx.globalAlpha = 1.0;
     }
-    // Explored range + robot position markers.
+    // Trajectory polylines (drawn before robot discs so discs sit on top).
+    // Also stamps the 3m sensor footprint along the path so the "explored
+    // range" follows the WHOLE trail — not just the current pose (which is all
+    // the single-position circle below shows).
+    if (this._traj) {
+      const c = this.cellPx;
+      const sensorR = 3.0 / this.res * c;   // 3m footprint radius in pixels
+      for (const [id, color] of [['robot_a', '#ff8800'], ['robot_b', '#cc00ff']]) {
+        const pts = this._traj[id];
+        if (!pts || pts.length < 1) continue;
+        // Project trail to screen pixels once.
+        const sp = pts.map(p => {
+          const gi = (p[0] - this.origin[0]) / this.res;
+          const gj = (p[1] - this.origin[1]) / this.res;
+          return [this.px0 + gi * c, this.py0 + (this.h - 1 - gj) * c];
+        });
+        // ── explored footprint: ONE thick translucent stroke along the trail
+        //    (lineWidth = 2*sensorR = 6m). round caps close the two ends into
+        //    disks and round joins smooth corners, so the stroke alone is the
+        //    full 3m buffer swept along the path. Do NOT also stamp a disk per
+        //    trail point — overlapping translucent fills compound alpha within
+        //    a single frame and turn dense sections opaque.
+        //    Single-point trail (no segments to stroke) → one disk.
+        ctx.save();
+        ctx.globalAlpha = 0.13;
+        ctx.fillStyle = color;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(2, sensorR * 2);
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        if (sp.length >= 2) {
+          ctx.beginPath();
+          ctx.moveTo(sp[0][0], sp[0][1]);
+          for (let k = 1; k < sp.length; k++) ctx.lineTo(sp[k][0], sp[k][1]);
+          ctx.stroke();
+        } else {
+          // Lone point: cap as a single disk.
+          ctx.beginPath();
+          ctx.arc(sp[0][0], sp[0][1], Math.max(2, sensorR), 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.restore();
+        // ── crisp trail line on top of the footprint.
+        if (sp.length >= 2) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = Math.max(1.5, c * 0.6);
+          ctx.lineJoin = 'round';
+          ctx.globalAlpha = 0.85;
+          ctx.beginPath();
+          ctx.moveTo(sp[0][0], sp[0][1]);
+          for (let k = 1; k < sp.length; k++) ctx.lineTo(sp[k][0], sp[k][1]);
+          ctx.stroke();
+          ctx.globalAlpha = 1.0;
+        }
+      }
+    }
+    // Robot position markers (disc + heading triangle). The single-position
+    // explored circle is drawn ONLY when there's no trail yet for that robot
+    // (otherwise the trail footprint above already covers the range).
     if (this._robotPos) {
       const c = this.cellPx;
-      // Explored circles (semi-transparent, behind markers).
       const sensorR = 3.0 / this.res * c;
       ctx.save();
       ctx.globalAlpha = 0.15;
       for (const [id, color] of [['robot_a', '#ff8800'], ['robot_b', '#cc00ff']]) {
         const rp = this._robotPos[id];
         if (!rp) continue;
+        // Skip the lone circle if a trail exists — the footprint along the
+        // trail (drawn above) is the real explored range.
+        if (this._traj && this._traj[id] && this._traj[id].length >= 2) continue;
         const gi = (rp.x - this.origin[0]) / this.res;
         const gj = (rp.y - this.origin[1]) / this.res;
         const sx = this.px0 + gi * c;

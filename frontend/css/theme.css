@@ -238,6 +238,18 @@ html, body {
 }
 #explore-status .es-label { color: var(--text-dim); }
 #explore-status b { color: var(--text-value); font-weight: 600; }
+#explore-status .es-path {
+  color: var(--accent);
+  cursor: pointer;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+  text-decoration: underline;
+}
+#explore-status .es-path:hover { color: var(--text-value); }
 #explore-status .es-actions {
   display: flex; gap: 6px; margin-bottom: 4px;
 }

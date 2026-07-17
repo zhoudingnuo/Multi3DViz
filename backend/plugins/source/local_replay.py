@@ -45,11 +45,18 @@ class LocalReplaySource(DataSourcePlugin):
     description = "Replay a recorded robot run (cloud_registered + Odometry) from disk."
     default_enabled = True
     multiple = True              # one instance per robot
-    # Default to BOTH robots so a fresh install shows the dual-robot scene
-    # (unitree + agibot) without the user having to add a second instance.
+    # Default to BOTH robots so a fresh install shows the dual-robot scene.
+    # Per-instance mode so one dog can be online while the other plays back a
+    # recorded run:
+    #   - robot_a (unitree): LIVE stream — polls cloud_registered/latest.npy
+    #     as the robot writes new frames.
+    #   - robot_b (agibot): BATCH replay — loads a specific recorded run from
+    #     disk (not auto-latest). Set run_dir to pin which run to replay.
     default_instances = [
-        {"robot": "unitree", "robot_id": "robot_a"},
-        {"robot": "agibot", "robot_id": "robot_b"},
+        {"robot": "unitree", "robot_id": "robot_a", "stream_mode": True},
+        {"robot": "agibot", "robot_id": "robot_b",
+         "stream_mode": False, "instant_load": True,
+         "run_dir": "run_20260701_175044"},
     ]
 
     properties = {
@@ -70,6 +77,12 @@ class LocalReplaySource(DataSourcePlugin):
             "type": "string",
             "default": "robot_a",
             "label": "Robot ID (data bus key)",
+            "group": "Source",
+        },
+        "run_dir": {
+            "type": "path",
+            "default": "",
+            "label": "Specific run dir (empty = auto latest)",
             "group": "Source",
         },
         "playback_rate": {
@@ -200,7 +213,7 @@ class LocalReplaySource(DataSourcePlugin):
             log.info("mode switch: %s=%s → full state reset, batch load cancelled, cloud cleared",
                      key, value)
         # Re-load only when data-source identity changes.
-        if key in ("data_root", "robot"):
+        if key in ("data_root", "robot", "run_dir"):
             if self.get("stream_mode", False):
                 # Stream mode: reset stream state so update() re-resolves the
                 # run dir from the new data_root next tick (no batch load).
@@ -213,21 +226,53 @@ class LocalReplaySource(DataSourcePlugin):
                 self._reload()
 
     # --- loading ---
-    def _run_dir(self) -> str:
+    def _parent_data_dir(self) -> str:
+        """The directory containing run_* subdirs: <data_root>/<robot>/data."""
         root = self.get("data_root")
         robot = self.get("robot")
         return os.path.join(root, robot, "data")
 
+    def _resolve_run(self):
+        """Return the concrete run directory to load/watch, or None.
+
+        - If `run_dir` is set, it's used verbatim (absolute) or resolved
+          against <data_root>/<robot>/data (relative). The path MUST exist and
+          be a directory — a specific run is a hard requirement, not auto-pick.
+        - Otherwise auto-pick the latest run subdir under the parent data dir.
+        """
+        spec = (self.get("run_dir") or "").strip()
+        if spec:
+            path = spec if os.path.isabs(spec) \
+                else os.path.join(self._parent_data_dir(), spec)
+            if os.path.isdir(path):
+                return path
+            log.warning("run_dir '%s' does not exist — idle until created", path)
+            return None
+        return player._latest_run_dir(self._parent_data_dir())
+
+    def _run_dir(self) -> str:
+        """Resolve the actual run directory to load from.
+
+        - If the user set a specific `run_dir` property, use it verbatim
+          (relative paths resolve against <data_root>/<robot>/data for
+          convenience — typing just "run_20260701_175044" works).
+        - Otherwise auto-pick the latest run subdir (legacy behavior)."""
+        spec = (self.get("run_dir") or "").strip()
+        if spec:
+            if os.path.isabs(spec):
+                return spec
+            return os.path.join(self._parent_data_dir(), spec)
+        return self._parent_data_dir()  # caller resolves latest via _latest_run_dir
+
     def _reload(self):
         if self._loading:
             return  # a load is already in flight
-        data_root = self._run_dir()
-        log.info("LocalReplay loading from %s", data_root)
-        latest = player._latest_run_dir(data_root)
+        latest = self._resolve_run()
         if latest is None:
-            log.warning("no run directory found under %s — idle until data appears",
-                        data_root)
+            log.warning("no run directory found for %s — idle until data appears",
+                        self.get("robot"))
             return
+        log.info("LocalReplay loading from %s", latest)
         # Heavy load + voxel downsample runs on a background thread so the WS
         # event loop stays responsive. A large run (thousands of frames) can
         # take 20-30s to downsample; doing it on the tick loop would freeze
@@ -392,7 +437,7 @@ class LocalReplaySource(DataSourcePlugin):
         self._retry_t += dt
         if self._loaded_root is None or self._retry_t >= 2.0:
             self._retry_t = 0.0
-            latest = player._latest_run_dir(self._run_dir())
+            latest = self._resolve_run()
             if latest is None:
                 return None
             if latest != self._loaded_root:

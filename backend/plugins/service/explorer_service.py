@@ -111,15 +111,16 @@ class ExplorerService(ServicePlugin):
     # --- main tick ---
     def update(self, dt: float):
         # Explorer grid/frontier logic is DISABLED (causes tick freeze).
-        # Only publish robot pose arrows so the user can see where robots are.
+        # Publishes: robot body/head boxes + trajectory line, all derived purely
+        # from odom (no scipy/grid work) so it can never stall the tick loop.
         import math as _m
         sa = self.get("source_a", "robot_a")
         sb = self.get("source_b", "robot_b")
         fa = self.ctx.data.latest(sa)
         fb = self.ctx.data.latest(sb)
         upd = SceneUpdate()
-        for rid, frame, color in [(sa, fa, [1.0, 0.6, 0.0]),
-                                   (sb, fb, [0.8, 0.0, 1.0])]:
+        for rid, frame, traj, color in [(sa, fa, "_traj_a", [1.0, 0.6, 0.0]),
+                                         (sb, fb, "_traj_b", [0.8, 0.0, 1.0])]:
             if frame is None:
                 continue
             odom = frame.get("odom")
@@ -134,12 +135,88 @@ class ExplorerService(ServicePlugin):
             c, s = _m.cos(yaw), _m.sin(yaw)
             pose[0][0] = c; pose[0][1] = -s
             pose[1][0] = s; pose[1][1] = c
+            # Robot body: rotated box.
             upd.update.append(SceneObject(
-                id=f"{rid}_pose", kind="arrow",
-                payload={"color": color, "pose": pose, "length": 0.5},
-                meta={"type": "robot_pose"},
+                id=f"{rid}_body", kind="box",
+                payload={"size": [0.35, 0.25, 0.15], "color": color, "pose": pose},
+                meta={"type": "robot_body"},
             ))
+            # Heading indicator: small white box in FRONT of the body, clearly
+            # outside it. Body half-length is 0.175, so 0.35 forward puts the
+            # head's near edge at 0.29 (well past the body end). Lifted to
+            # z=0.15 so it also clears the body top (0.075) and reads as a
+            # distinct "head" even when zoomed out.
+            hl = 0.35
+            hx = x + _m.cos(yaw) * hl
+            hy = y + _m.sin(yaw) * hl
+            hpose = np.eye(4).tolist()
+            hpose[0][3] = hx; hpose[1][3] = hy; hpose[2][3] = 0.15
+            hpose[0][0] = c; hpose[0][1] = -s
+            hpose[1][0] = s; hpose[1][1] = c
+            upd.update.append(SceneObject(
+                id=f"{rid}_head", kind="box",
+                payload={"size": [0.14, 0.14, 0.14], "color": [1, 1, 1], "pose": hpose},
+                meta={"type": "robot_head"},
+            ))
+            # ---- trajectory ----
+            # Two odom shapes flow through the data bus:
+            #   stream mode  → all_odom is [1 point] (robot overwrites
+            #                  odom_stream.jsonl each push); grow the trail
+            #                  incrementally from the single live `odom`.
+            #   batch mode   → all_odom is the FULL recorded sequence (1000s of
+            #                  points). The single `odom` is pinned to the LAST
+            #                  point, so incremental append would never form a
+            #                  sequence. Build the trail directly from all_odom.
+            tl = getattr(self, traj)
+            all_odom = frame.get("all_odom") or []
+            seq_len = len(all_odom)
+            last_len = getattr(self, traj + "_seqlen", 0)
+            if seq_len > 1:
+                # Sequence available (batch mode). Rebuild only when the
+                # sequence grows (cheap filter-walk; skipped once it's stable).
+                if seq_len != last_len:
+                    tl = self._trail_from_sequence(all_odom)
+                    setattr(self, traj, tl)
+                    setattr(self, traj + "_seqlen", seq_len)
+            elif odom is not None:
+                # Single live point (stream mode) — append if moved enough.
+                if not tl or ((x - tl[-1][0]) ** 2 + (y - tl[-1][1]) ** 2) ** 0.5 >= 0.1:
+                    tl.append((x, y))
+                    if len(tl) > 5000:
+                        del tl[: len(tl) - 5000]
+                setattr(self, traj + "_seqlen", 0)
+            # 3D trajectory line (z=0.05 so it sits just above the ground plane
+            # and is visible over the point cloud). CRITICAL: positions must be
+            # plain python floats — scene_bridge _small_op does list(pt) and a
+            # numpy float32 here will make json.dumps throw in the tick loop.
+            if len(tl) >= 2:
+                positions = [[float(p[0]), float(p[1]), 0.05] for p in tl]
+                upd.update.append(SceneObject(
+                    id=f"{rid}_traj", kind="line",
+                    payload={"positions": positions, "color": color, "width": 2.0},
+                    meta={"type": "robot_traj"},
+                ))
         return upd if upd.update else None
+
+    @staticmethod
+    def _trail_from_sequence(all_odom):
+        """Build a downsampled [(x,y),...] trail from a full recorded odom
+        sequence (batch mode). Walks the points in order, keeping a point only
+        when the robot has moved >= MIN_STEP m from the last kept point — this
+        collapses stops/lingers into a single dot while preserving the actual
+        path geometry. Returns plain python tuples (no numpy)."""
+        MIN_STEP = 0.1
+        trail = []
+        lx = ly = None
+        for o in all_odom:
+            try:
+                x = float(o.get("x", 0.0)); y = float(o.get("y", 0.0))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if lx is None or (x - lx) ** 2 + (y - ly) ** 2 >= MIN_STEP * MIN_STEP:
+                trail.append((x, y))
+                lx, ly = x, y
+        return trail
 
     def _bg_compute(self, dt: float):
         """Background thread: run the full explorer update cycle. Stores the

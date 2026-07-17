@@ -19,6 +19,11 @@ document.getElementById('dbg-toggle').addEventListener('click', () => {
 document.getElementById('dbg-clear').addEventListener('click', () => {
   document.getElementById('dbg-log').innerHTML = '';
 });
+// Click the trajectory-save path to open the folder in the OS explorer.
+document.getElementById('es-traj-path').addEventListener('click', (e) => {
+  const p = e.currentTarget.dataset.path;
+  if (p) ws.send({ type: 'open_path', path: p });
+});
 
 // app.js — frontend bootstrap. Wires WSClient events to SceneManager +
 // GridView + PluginPanel + playback bar + status bar. Reads the backend URL
@@ -239,10 +244,18 @@ ws.onInfoState = (i) => {
     if (posB) parts.push(`B(${posB[0].toFixed(1)},${posB[1].toFixed(1)},${posB[2].toFixed(0)}°)`);
     esPos.textContent = parts.length ? parts.join(' ') : '—';
   }
-  // Update 2D grid robot position markers.
+  // Update 2D grid robot position markers + trajectory polylines.
   if (typeof grid !== 'undefined' && grid) {
     grid.setRobotPos('robot_a', posA ? [posA[0], posA[1]] : null, posA ? posA[2] : 0);
     grid.setRobotPos('robot_b', posB ? [posB[0], posB[1]] : null, posB ? posB[2] : 0);
+    grid.setTraj('robot_a', i.robot_traj_a || null);
+    grid.setTraj('robot_b', i.robot_traj_b || null);
+  }
+  // Trajectory PNG save path — show where the auto-saved file lands.
+  const esTrajPath = document.getElementById('es-traj-path');
+  if (esTrajPath && i.traj_save_dir) {
+    esTrajPath.textContent = i.traj_save_dir;
+    esTrajPath.dataset.path = i.traj_save_dir;
   }
   const esDist = document.getElementById('es-dist');
   if (esDist) {

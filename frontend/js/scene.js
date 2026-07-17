@@ -186,7 +186,16 @@ export class SceneManager {
       this.objects.set(op.id, box);
     }
     const T = op.pose || identity();
-    box.matrix.fromArray(flatten(T));
+    // Matrix4.set() takes row-major args (n11,n12,...), which matches our
+    // nested-list pose [[r0],[r1],[r2],[r3]]. Do NOT use fromArray(flatten) —
+    // that reads column-major and TRANSPOSES the rotation, making a box whose
+    // long axis should point "forward" point sideways instead.
+    box.matrix.set(
+      T[0][0], T[0][1], T[0][2], T[0][3],
+      T[1][0], T[1][1], T[1][2], T[1][3],
+      T[2][0], T[2][1], T[2][2], T[2][3],
+      T[3][0], T[3][1], T[3][2], T[3][3],
+    );
     box.matrixAutoUpdate = false;
   }
 

@@ -218,65 +218,18 @@ class ICPRegistrationService(ServicePlugin):
         rid_b = self.get("source_b", "robot_b")
         upd.remove.append(f"{rid_a}_cloud")
         upd.remove.append(f"{rid_b}_cloud")
+        # Clear the legacy robot marker / trail objects this plugin used to own
+        # so they don't linger in the 3D viewport (stale yellow blotch).
+        upd.remove.append("robot_positions")
+        upd.remove.append("traj_a")
+        upd.remove.append("traj_b")
 
-        # --- PUBLISH ROBOT POSITIONS (live odom markers) ---
-        # Draw each robot as a small bright dot at its current odom position
-        # so the user can see where the robots actually are. Robot A is at its
-        # own odom origin frame; Robot B is transformed into A's frame via T.
-        pos_markers = []
-        marker_colors = []
-        marker_size = 0.3  # larger than cloud points so it stands out
-
-        # Robot A position (from its own odom, already in merged frame since
-        # A IS the origin).
-        odom_a = fa.get("odom")
-        if odom_a:
-            pos_markers.append([odom_a.get("x", 0), odom_a.get("y", 0), odom_a.get("z", 0)])
-            marker_colors.append([1.0, 0.8, 0.0])  # gold for A
-        # Robot B position (transform B's odom into A's frame via T_b_to_a).
-        odom_b = fb.get("odom")
-        if odom_b and self._T_b_to_a is not None:
-            bp = np.array([odom_b.get("x", 0), odom_b.get("y", 0), odom_b.get("z", 0), 1.0])
-            bp_a = (self._T_b_to_a @ bp)[:3]
-            pos_markers.append(bp_a.tolist())
-            marker_colors.append([0.0, 1.0, 0.6])  # mint for B
-        if pos_markers:
-            marker_obj = SceneObject(
-                id="robot_positions",
-                kind="points",
-                payload={"positions": np.array(pos_markers, dtype=np.float32),
-                         "colors": np.array(marker_colors, dtype=np.float32),
-                         "point_size": marker_size},
-                meta={"type": "robot_markers"},
-            )
-            upd.update.append(marker_obj)
-
-        # --- PUBLISH ROBOT TRAJECTORIES (trail lines) ---
-        # Accumulate each robot's odom into a trail. Only append when the robot
-        # moved > 0.1m from its last trail point (avoids dense stationary clusters).
-        TRAIL_MIN_STEP = 0.1
-        if odom_a:
-            pa = [odom_a.get("x", 0), odom_a.get("y", 0), odom_a.get("z", 0)]
-            if not self._traj_a or np.linalg.norm(np.array(pa) - np.array(self._traj_a[-1])) > TRAIL_MIN_STEP:
-                self._traj_a.append(pa)
-        if odom_b and self._T_b_to_a is not None:
-            bp = np.array([odom_b.get("x", 0), odom_b.get("y", 0), odom_b.get("z", 0), 1.0])
-            bp_a = (self._T_b_to_a @ bp)[:3].tolist()
-            if not self._traj_b or np.linalg.norm(np.array(bp_a) - np.array(self._traj_b[-1])) > TRAIL_MIN_STEP:
-                self._traj_b.append(bp_a)
-        if len(self._traj_a) >= 2:
-            upd.update.append(SceneObject(
-                id="traj_a", kind="line",
-                payload={"positions": np.array(self._traj_a, dtype=np.float32).tolist(),
-                         "color": [1.0, 0.8, 0.0]},  # gold, matches robot A marker
-            ))
-        if len(self._traj_b) >= 2:
-            upd.update.append(SceneObject(
-                id="traj_b", kind="line",
-                payload={"positions": np.array(self._traj_b, dtype=np.float32).tolist(),
-                         "color": [0.0, 1.0, 0.6]},  # mint, matches robot B marker
-            ))
-
+        # NOTE: robot position markers + trajectory lines used to be published
+        # here (gold dots `robot_positions`, gold/mint trails `traj_a`/`traj_b`).
+        # They are now published SOLELY by ExplorerService (robot_body/robot_head
+        # boxes + {rid}_traj line), which works in ALL modes (single-robot, no
+        # ICP). Duplicating them here caused "two yellow trails" for robot A and
+        # an unbounded trail (no cap) that could sprawl across the viewport.
         return upd
 
     def state_snapshot(self):

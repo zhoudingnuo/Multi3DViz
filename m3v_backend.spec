@@ -32,6 +32,8 @@ _datas = [
 # open3d ships bundled resource files (DLLs, configs) loaded at runtime.
 # (torch is excluded — slim build.)
 _datas += collect_data_files('open3d')
+# matplotlib ships fonts + style data needed at runtime (savefig uses fonts).
+_datas += collect_data_files('matplotlib')
 # pip is needed for in-app optional dep install (optional_deps.install()).
 # Collect its full submodule tree + data — pip dynamically imports many
 # internal modules at runtime that static analysis misses.
@@ -50,6 +52,9 @@ a = Analysis(
         'open3d',
         'scipy', 'scipy.special',
         'numpy', 'paramiko', 'websockets',
+        # matplotlib — lazy-imported by trajectory_plot (PNG export). Must be
+        # listed explicitly since the import is inside a function body.
+        'matplotlib', 'matplotlib.pyplot', 'matplotlib.backends.backend_agg',
         # pip full submodule tree — needed for in-app optional dep install
         # (optional_deps.install calls pip._internal.cli.main.main).
         # pip dynamically imports commands/resolvers at runtime.
@@ -80,8 +85,9 @@ a = Analysis(
         # imports it lazily and reports unavailable when missing. torch+CUDA
         # alone is 4.3G of the bundle.
         'torch',
-        # matplotlib — used only by trajectory_plot (PNG export). Lazy-imported.
-        'matplotlib',
+        # NOTE: matplotlib is intentionally NOT excluded — it's needed by
+        # trajectory_plot.save_trajectory_figure (auto PNG export every few
+        # seconds + manual export). ~30M, acceptable for a real feature.
         # === Hermes-venv cruft (not used by backend at all) ===
         'polars', '_polars_runtime_32',
         'llvmlite', 'numba',

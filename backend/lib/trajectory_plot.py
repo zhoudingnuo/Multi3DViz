@@ -29,6 +29,50 @@ ROBOT_COLORS = {
 }
 
 
+def _buffer_trail_mask(trail, H, W, ox, oy, res, sensor_r=3.0):
+    """Build an (H,W) bool mask marking every grid cell within sensor_r meters
+    of any trail point — the sensor footprint swept along the robot's path.
+
+    This is the correct notion of "explored": only cells the robot's sensors
+    could actually see (within range of where it drove). It replaces the old
+    `(grid == 0)` fallback that painted ALL free cells as explored.
+
+    Vectorised: one disk stamp per unique trail cell. Cheap even for thousands
+    of trail points since the disk is small (sensor_r/res cells radius) and we
+    dedupe trail cells before stamping.
+    """
+    mask = np.zeros((H, W), dtype=bool)
+    if not trail:
+        return mask
+    r_cells = max(1, int(round(sensor_r / res)))
+    # Dedupe trail → grid cells (many trail points map to the same cell).
+    seen = set()
+    for p in trail:
+        try:
+            wx, wy = float(p[0]), float(p[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        ci = int((wx - ox) / res)
+        cj = int((wy - oy) / res)
+        if (ci, cj) in seen:
+            continue
+        seen.add((ci, cj))
+        # Stamp a filled disk of radius r_cells centered at (ci, cj). Clip to
+        # grid bounds. Use a bounding-box slice + a precomputed disk offset
+        # table so each stamp is one boolean OR, not a per-pixel loop.
+        i0 = max(0, ci - r_cells); i1 = min(W, ci + r_cells + 1)
+        j0 = max(0, cj - r_cells); j1 = min(H, cj + r_cells + 1)
+        if i0 >= i1 or j0 >= j1:
+            continue
+        # Local coordinate grids relative to the disk center, then distance test.
+        ii = np.arange(i0, i1) - ci
+        jj = np.arange(j0, j1) - cj
+        dy, dx = np.meshgrid(jj, ii, indexing="ij")
+        disk = (dx * dx + dy * dy) <= r_cells * r_cells
+        mask[j0:j1, i0:i1] |= disk
+    return mask
+
+
 def save_trajectory_figure(gmap, robots, save_path, title_extra=None,
                             coverage_mask=None, targets=None):
     """Render and save a trajectory plot.
@@ -65,6 +109,20 @@ def save_trajectory_figure(gmap, robots, save_path, title_extra=None,
     res = gmap.res
     ox, oy = float(gmap.origin[0]), float(gmap.origin[1])
 
+    # ── coverage: derive from the trails if the caller didn't pass a mask.
+    #    A trail buffer marks every cell within SENSOR_R meters of any trail
+    #    point as explored — the sensor footprint swept along the path. The old
+    #    fallback (grid == 0 = ALL free cells) wrongly painted the whole map as
+    #    explored even where the robot never went.
+    if coverage_mask is None:
+        all_trails = []
+        for r in robots:
+            t = r.get("trail") or []
+            if len(t) >= 1:
+                all_trails.extend(t)
+        coverage_mask = _buffer_trail_mask(all_trails, H, W, ox, oy, res,
+                                           sensor_r=3.0)
+
     fig, ax = plt.subplots(figsize=(12, 10))
 
     # ── 1) Background: tri-state gray. Darker = less known/less traversable.
@@ -75,13 +133,11 @@ def save_trajectory_figure(gmap, robots, save_path, title_extra=None,
               extent=[0, W, H, 0], aspect="equal", interpolation="nearest")
 
     # ── 2) Coverage overlay: green tint where robot has actually explored.
-    #       Falls back to "all free cells" only if caller passes no mask.
-    #       Built as an explicit RGBA array (not a cmap+alpha imshow) because
-    #       the Greens cmap at alpha=0.28 over a 0.92-gray free background is
-    #       nearly invisible — a solid translucent green reads far better.
-    mask_passed = coverage_mask is not None
-    if coverage_mask is None:
-        coverage_mask = (grid == 0)
+    #       coverage_mask was either passed by the caller OR derived above from
+    #       the trails (3m buffer along the path). Built as an explicit RGBA
+    #       array (not a cmap+alpha imshow) because the Greens cmap at
+    #       alpha=0.28 over a 0.92-gray free background is nearly invisible — a
+    #       solid translucent green reads far better.
     cov_rgba = np.zeros((H, W, 4), dtype=np.float32)
     cov_rgba[coverage_mask] = [0.40, 0.80, 0.45, 0.45]   # #66CC33-ish, 45% alpha
     ax.imshow(cov_rgba, origin="upper",
@@ -136,12 +192,10 @@ def save_trajectory_figure(gmap, robots, save_path, title_extra=None,
     n_obs  = int((grid == 100).sum())
     n_unk  = int((grid == -1).sum())
     total  = n_free + n_obs + n_unk
-    # Coverage: if a real explored mask was passed, use explored/free (true
-    # coverage of explorable space). Otherwise fall back to free/(free+unk).
-    if mask_passed and n_free > 0:
-        cov_pct = (float(coverage_mask.sum()) / n_free) * 100
-    else:
-        cov_pct = (n_free / max(n_free + n_unk, 1)) * 100
+    # Coverage: explored cells / free cells (true coverage of explorable
+    # space). coverage_mask is always defined here — either caller-provided or
+    # derived from the trails above.
+    cov_pct = (float(coverage_mask.sum()) / n_free) * 100 if n_free > 0 else 0.0
 
     title_lines = [
         f"CCenter · Exploration Trajectory",

@@ -42,7 +42,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", str(_MAX_THREADS))
 import importlib.abc as _ilabc
 import types as _types
 _STUB_PACKAGES = {
-    "plotly", "dash", "matplotlib", "werkzeug", "flask",
+    "plotly", "dash", "werkzeug", "flask",
     "retry", "tenacity", "pandas", "nbformat",
 }
 class _StubFinder(_ilabc.MetaPathFinder):
@@ -468,6 +468,27 @@ class Backend:
             # trajectory_plot.save_trajectory_figure.
             path = self._export_trajectory()
             await ws.send(proto.make_response(rid, ok=bool(path), path=path))
+        elif mtype == "open_path":
+            # Open a folder in the OS file explorer (e.g. the trajectory save
+            # dir). Windows: explorer; the path is validated to exist first so
+            # a bad path can't launch arbitrary shells.
+            p = str(msg.get("path") or "").strip()
+            import os as _os
+            ok = bool(p) and _os.path.isdir(p)
+            if ok:
+                import sys as _sys
+                import subprocess as _sp
+                try:
+                    if _sys.platform.startswith("win"):
+                        _sp.Popen(["explorer", p])
+                    elif _sys.platform == "darwin":
+                        _sp.Popen(["open", p])
+                    else:
+                        _sp.Popen(["xdg-open", p])
+                except Exception as e:
+                    log.warning("open_path failed: %s", e)
+                    ok = False
+            await ws.send(proto.make_response(rid, ok=ok))
         elif mtype == "install_dependency":
             # In-app optional dependency install (e.g. torch for Semantics).
             # Acks immediately, runs pip in a daemon thread, streams progress
@@ -723,6 +744,14 @@ class Backend:
         info["explore_angle"] = None    # angle error to target (deg)
         info["robot_pos_a"] = None      # [x, y, yaw] or null
         info["robot_pos_b"] = None
+        # Trajectory polylines (world XY) for 2D grid rendering. Populated by
+        # the explorer service from odom. Sent downsampled to keep info_state
+        # (1Hz, JSON) small — every ~5th point up to a cap.
+        info["robot_traj_a"] = []
+        info["robot_traj_b"] = []
+        # Where auto-saved trajectory PNGs land, so the UI can show the path
+        # (users can't find %APPDATA%/Multi3DViz/output by default).
+        info["traj_save_dir"] = self._traj_save_dir()
         # Mode: single (one source) vs dual (both + ICP).
         if ex is not None:
             info["explore_mode"] = "dual" if ex._T_b_to_a is not None else "single"
@@ -742,6 +771,18 @@ class Backend:
                 info[rkey] = [round(float(o.get("x", 0)), 2),
                               round(float(o.get("y", 0)), 2),
                               round(_m.degrees(yaw), 1)]
+        # Trajectory polylines from the explorer (downsampled for JSON). The
+        # explorer accumulates _traj_a/_traj_b every tick from odom; we send a
+        # coarse subset so the 1Hz info_state message stays small.
+        if ex is not None:
+            for tkey, src in [("robot_traj_a", getattr(ex, "_traj_a", None)),
+                              ("robot_traj_b", getattr(ex, "_traj_b", None))]:
+                if not src:
+                    continue
+                # Stride ~every 5th point, cap at 600 pts (120 m at 0.2m res).
+                step = max(1, len(src) // 600)
+                info[tkey] = [[round(float(p[0]), 2), round(float(p[1]), 2)]
+                              for p in src[::step]]
         # Explore execution status from SSHLauncher.
         ssh = self.registry.get("SSHLauncher")
         if ssh is not None:
@@ -760,82 +801,103 @@ class Backend:
                 info["explore_angle"] = round(angle_err, 1)
         return info
 
+    def _grid_for_trajectory(self):
+        """Pick a GridMap to render the trajectory onto.
+
+        The explorer's own grid is disabled (freeze), so we reuse the
+        GridMapDisplay instance's built grid instead. Prefer robot_a; fall back
+        to any available. Returns (gmap, coverage_mask_or_None)."""
+        # Prefer robot_a's grid, then robot_b, then any.
+        for rid in ("robot_a", "robot_b"):
+            for iid, inst in self.registry._instances.items():
+                if inst.name == "GridMap" and \
+                        inst.get("robot_id", "robot_a") == rid and \
+                        getattr(inst, "_gmap", None) is not None:
+                    return inst._gmap, None
+        # Fallback: any GridMapDisplay with a grid.
+        for iid, inst in self.registry._instances.items():
+            if inst.name == "GridMap" and getattr(inst, "_gmap", None) is not None:
+                return inst._gmap, None
+        return None, None
+
+    def _traj_save_dir(self):
+        """Output dir for trajectory PNGs.
+
+        Packed app: %APPDATA%/Multi3DViz/output — the Windows-standard
+        userData location (same dir Electron uses for its own data). Stable
+        across reinstalls/updates, discoverable, and not buried inside the
+        backend's extraResources subdir.
+        Dev: <repo>/output (next to the backend source)."""
+        import os as _os
+        import sys as _sys
+        if getattr(_sys, "frozen", False):
+            appdata = _os.environ.get("APPDATA")
+            if appdata:
+                out_dir = _os.path.join(appdata, "Multi3DViz", "output")
+            else:
+                # Fallback if APPDATA unset (rare): next to the exe.
+                out_dir = _os.path.join(_os.path.dirname(_sys.executable), "output")
+        else:
+            base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            out_dir = _os.path.join(base, "output")
+        _os.makedirs(out_dir, exist_ok=True)
+        return out_dir
+
     def _save_live_snapshot(self):
         """Save a live exploration snapshot every few seconds, OVERWRITING the
         same file (explore_latest.png) so it's always current. Runs in a daemon
         thread — matplotlib rendering is slow and must not block the tick loop.
-        Only saves when the explorer has a grid + at least one trail point."""
+
+        Decoupled from the disabled explorer: uses the explorer's odom-derived
+        trajectories (_traj_a/_traj_b) + a GridMapDisplay's built grid."""
         import os as _os
-        import sys as _sys
         try:
             ex = self.ctx.explorer_ref
-            if ex is None or getattr(ex, "_gmap", None) is None or \
-                    getattr(ex, "_explorer", None) is None:
+            if ex is None or (not ex._traj_a and not ex._traj_b):
                 return
-            # Skip if no exploration has happened yet (no trail).
-            if not ex._traj_a and not ex._traj_b:
-                return
+            gmap, coverage = self._grid_for_trajectory()
+            if gmap is None:
+                return  # no grid yet — nothing to draw on
             from lib.trajectory_plot import save_trajectory_figure
-            if getattr(_sys, "frozen", False):
-                base = _os.path.dirname(_sys.executable)
-            else:
-                base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-            out_dir = _os.path.join(base, "output")
-            _os.makedirs(out_dir, exist_ok=True)
-            path = _os.path.join(out_dir, "explore_latest.png")
+            out_dir = self._traj_save_dir()
+            # Match ccenter's auto-save filename so the user finds it where they
+            # expect: output/trajectory_latest_auto.png (overwritten each cycle).
+            path = _os.path.join(out_dir, "trajectory_latest_auto.png")
             robots = [
-                {"name": "Robot A", "trail": ex._traj_a, "color": "#E74C3C"},
-                {"name": "Robot B", "trail": ex._traj_b, "color": "#3498DB"},
+                {"name": "Robot A", "trail": list(ex._traj_a), "color": "#E74C3C"},
+                {"name": "Robot B", "trail": list(ex._traj_b), "color": "#3498DB"},
             ]
-            targets = []
-            e = ex._explorer
-            tcolors = [("#E74C3C", "A"), ("#3498DB", "B")]
-            for i in (0, 1):
-                if e.targets[i] is not None:
-                    gy, gx = e.targets[i]
-                    wx, wy = e.grid_to_world(gy, gx)
-                    targets.append((wx, wy, tcolors[i][0], tcolors[i][1]))
-            save_trajectory_figure(ex._gmap, robots, path,
-                                   coverage_mask=e.explored, targets=targets)
-        except Exception:
-            pass  # best-effort — don't spam logs from a daemon thread
+            save_trajectory_figure(gmap, robots, path, coverage_mask=coverage)
+        except Exception as e:
+            # Log the FIRST failure so silent breakage (like a missing dep) is
+            # visible; throttle after that so a persistent error doesn't spam
+            # the daemon-thread log every 3s.
+            self._snap_err_t = getattr(self, "_snap_err_t", 0) + 1
+            if self._snap_err_t <= 2 or self._snap_err_t % 20 == 0:
+                log.warning("trajectory snapshot failed (%d): %s",
+                            self._snap_err_t, e)
 
     def _export_trajectory(self) -> str | None:
-        """Render a trajectory PNG from the explorer's current state. Returns
-        the saved path or None if the explorer has no grid yet."""
+        """Render a trajectory PNG (grid + trails) on demand. Returns the saved
+        path or None if there's no grid yet. Uses the explorer's odom-derived
+        trajectories + a GridMapDisplay's built grid (explorer grid disabled)."""
         ex = self.registry.get("DualAgentExplorer")
-        if ex is None or getattr(ex, "_gmap", None) is None or \
-                getattr(ex, "_explorer", None) is None:
+        if ex is None or (not ex._traj_a and not ex._traj_b):
+            return None
+        gmap, coverage = self._grid_for_trajectory()
+        if gmap is None:
             return None
         import os as _os
-        import sys as _sys
         from lib.trajectory_plot import save_trajectory_figure, default_save_path
-        # Frozen-safe output dir (see _save_exploration_snapshot for rationale).
-        if getattr(_sys, "frozen", False):
-            base = _os.path.dirname(_sys.executable)
-        else:
-            base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        out_dir = _os.path.join(base, "output")
-        _os.makedirs(out_dir, exist_ok=True)
+        out_dir = self._traj_save_dir()
         path = default_save_path(out_dir)
-        # Build the robots arg expected by save_trajectory_figure: per-robot
-        # trail + color. Targets from the explorer.
         robots = [
-            {"name": "Robot A", "trail": ex._traj_a, "color": "#E74C3C"},
-            {"name": "Robot B", "trail": ex._traj_b, "color": "#3498DB"},
+            {"name": "Robot A", "trail": list(ex._traj_a), "color": "#E74C3C"},
+            {"name": "Robot B", "trail": list(ex._traj_b), "color": "#3498DB"},
         ]
-        targets = []
-        e = ex._explorer
-        for i in (0, 1):
-            if e.targets[i] is not None:
-                gy, gx = e.targets[i]
-                targets.append(e.grid_to_world(gy, gx))
-            else:
-                targets.append(None)
-        coverage = e.explored if e.explored is not None else None
         try:
-            return save_trajectory_figure(ex._gmap, robots, path,
-                                          coverage_mask=coverage, targets=targets)
+            return save_trajectory_figure(gmap, robots, path,
+                                          coverage_mask=coverage)
         except Exception as e2:
             log.warning("trajectory export failed: %s", e2)
             return None
